@@ -1,32 +1,25 @@
 numpy
 pandas
 scikit-learn
-ccxt
+ccxt~=2.9.10
 aiohttp
+
 websockets
-websocket-client
 SQLAlchemy
 python-dotenv
 joblib
 arch
 ta
 oandapyV20
-
-# ML
-tensorflow-cpu==2.20.0
+qasync
+xgboost
 
 # GUI
-
 pyqtgraph
 qasync
-tensorflow==2.21.0rc0
-python-qt5
 pyside6
-kafka-python
 reportlab
 matplotlib
 celery
 keyring
-
-confluent-kafka
 hmmlearn

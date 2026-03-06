@@ -1,13 +1,14 @@
-Market Feeds  →  Event Bus  →  Strategy Engine
-↓
-Signals
-↓
-Risk Engine
-↓
-Smart Order Router
-↓
-Execution Layer
-↓
-Portfolio Manager
-↓
-Kafka Bus
+
+
+
+
+┌───────────────────────────────┐
+│  Sopotek AI Trading Terminal  │
+├───────────────────────────────┤
+│ Market Watch │ Chart │ Trades │
+│ Tick Chart   │       │        │
+│              │       │        │
+│ RSI / Volume │       │        │
+├───────────────────────────────┤
+│ System Console                │
+└───────────────────────────────┘
