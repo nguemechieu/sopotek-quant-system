@@ -442,7 +442,7 @@ class Dashboard(QWidget):
         self.eyebrow_label.setObjectName("eyebrow")
         headline_col.addWidget(self.eyebrow_label)
 
-        self.hero_title_label = QLabel("Dashboard that feels ready before you even press connect.")
+        self.hero_title_label = QLabel("I'm ready before you even press connect.")
         self.hero_title_label.setObjectName("heroTitle")
         self.hero_title_label.setWordWrap(True)
         headline_col.addWidget(self.hero_title_label)
@@ -708,7 +708,8 @@ class Dashboard(QWidget):
         panel_layout.addWidget(self.connect_button)
 
         self.footer_label = QLabel(
-            "Start in paper mode when testing a new broker or strategy combination. The dashboard is designed to make that transition obvious and fast."
+            "Start in paper mode when testing a new broker or strategy combination. "
+            "The dashboard is designed to make that transition obvious and fast."
         )
         self.footer_label.setObjectName("hintLabel")
         self.footer_label.setWordWrap(True)
@@ -1181,7 +1182,8 @@ class Dashboard(QWidget):
             QMessageBox.warning(self, "Missing Credentials", "API credentials are required for this broker.")
             return
         if broker_type == "forex" and not account_id:
-            QMessageBox.warning(self, "Missing Account ID", "Account ID is required for Oanda sessions.")
+            QMessageBox.warning(self, "Missing Account ID",
+                                "Account ID is required for Oanda sessions.")
             return
 
         broker_config = BrokerConfig(

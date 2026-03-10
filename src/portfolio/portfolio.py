@@ -40,7 +40,9 @@ class Portfolio:
     # TOTAL EQUITY
     # ===================================
 
-    def get_equity(self, market_prices):
+    def get_equity(self, market_prices=None):
+
+        market_prices = market_prices or {}
 
         total = self.cash
 
@@ -52,3 +54,6 @@ class Portfolio:
                 total += pos.market_value(price)
 
         return total
+
+    def equity(self, market_prices=None):
+        return self.get_equity(market_prices)

@@ -9,7 +9,7 @@ class MainWindow(QMainWindow):
 
         self.controller = controller
 
-        self.setWindowTitle("Sopotek Trading AI")
+        self.setWindowTitle("Sopotek AI Trading Platform   ----------------------------------------------     Sopotek,Inc")
 
         self._create_menu()
 
