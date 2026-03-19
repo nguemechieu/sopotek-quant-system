@@ -1,4 +1,3 @@
-from frontend.console.system_console import SystemConsole
 import asyncio
 import json
 import logging
@@ -13,7 +12,7 @@ from pathlib import Path
 
 import aiohttp
 import pandas as pd
-from PySide6.QtCore import QSettings, QTimer, Signal
+from PySide6.QtCore import QEvent, QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -35,7 +34,9 @@ from core.sopotek_trading import SopotekTrading
 from event_bus.event_bus import EventBus
 from event_bus.event_types import EventType
 from frontend.ui.dashboard import Dashboard
-from frontend.ui.i18n import DEFAULT_LANGUAGE, normalize_language_code, translate
+from frontend.console.system_console import SystemConsole
+
+from frontend.ui.i18n import DEFAULT_LANGUAGE, apply_runtime_translations, normalize_language_code, translate
 from frontend.ui.services.screenshot_service import capture_widget_to_output, sanitize_screenshot_fragment
 from frontend.ui.terminal import Terminal
 from integrations.news_service import NewsService
@@ -58,7 +59,6 @@ from storage.equity_repository import EquitySnapshotRepository
 from storage.market_data_repository import MarketDataRepository
 from storage.trade_repository import TradeRepository
 from strategy.strategy import Strategy
-from frontend.console.system_console import SystemConsole
 
 
 try:
@@ -84,11 +84,48 @@ def _bounded_window_extent(requested, available, *, margin=24, minimum=640):
     return bounded_size, bounded_minimum
 
 
+def _normalize_forex_candle_price_component(value):
+    normalized = str(value or "bid").strip().lower()
+    if normalized in {"b", "bid", "bids"}:
+        return "bid"
+    if normalized in {"a", "ask", "asks"}:
+        return "ask"
+    if normalized in {"m", "mid", "middle", "midpoint"}:
+        return "mid"
+    return "bid"
+
+
+def _normalize_history_boundary(value, *, end_of_day=False):
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        timestamp = pd.Timestamp(value)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if "T" not in text and len(text) <= 10:
+            text = (
+                f"{text}T23:59:59.999999+00:00"
+                if end_of_day
+                else f"{text}T00:00:00+00:00"
+            )
+        timestamp = pd.Timestamp(text)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    return timestamp
+
+
 
 
 class AppController(QMainWindow):
     MAX_HISTORY_LIMIT = 50000
     FOREX_STANDARD_LOT_UNITS = 100000.0
+    ORDER_SIZE_BUFFER = 0.98
     OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
     OPENAI_TTS_VOICES = [
         "alloy",
@@ -157,6 +194,10 @@ class AppController(QMainWindow):
 
         self.logger = logging.getLogger("AppController")
         self.logger.setLevel(logging.INFO)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         os.makedirs("logs", exist_ok=True)
         if not self.logger.handlers:
@@ -230,6 +271,9 @@ class AppController(QMainWindow):
         self.news_draw_on_chart = str(self.settings.value("integrations/news_draw_on_chart", "true")).lower() in {"1", "true", "yes", "on"}
         self.news_feed_url = str(self.settings.value("integrations/news_feed_url", NewsService.DEFAULT_FEED_URL) or NewsService.DEFAULT_FEED_URL).strip()
         self.market_trade_preference = normalize_market_venue(self.settings.value("trading/market_type", "auto"))
+        self.forex_candle_price_component = _normalize_forex_candle_price_component(
+            self.settings.value("market_data/forex_candle_price_component", "bid")
+        )
         self.database_mode = str(self.settings.value("storage/database_mode", "local") or "local").strip().lower()
         if self.database_mode not in {"local", "remote"}:
             self.database_mode = "local"
@@ -503,6 +547,7 @@ class AppController(QMainWindow):
         return False
 
     def set_language(self, language_code):
+        previous_language = self.language_code
         normalized = normalize_language_code(language_code)
         if normalized == self.language_code:
             return
@@ -511,6 +556,33 @@ class AppController(QMainWindow):
         self.settings.setValue("ui/language", normalized)
         self.setWindowTitle(self.tr("app.window_title"))
         self.language_changed.emit(normalized)
+        self._refresh_open_language_widgets(previous_language)
+
+    def _refresh_open_language_widgets(self, previous_language=None):
+        app = QApplication.instance()
+        if app is None:
+            return
+        for widget in app.topLevelWidgets():
+            try:
+                if hasattr(widget, "apply_language") and callable(widget.apply_language):
+                    widget.apply_language()
+                apply_runtime_translations(
+                    widget,
+                    self.language_code,
+                    previous_language=previous_language,
+                )
+            except Exception:
+                continue
+
+    def eventFilter(self, watched, event):
+        if event is not None and event.type() == QEvent.Type.Show and self.language_code != DEFAULT_LANGUAGE:
+            try:
+                is_window = getattr(watched, "isWindow", None)
+                if callable(is_window) and is_window():
+                    apply_runtime_translations(watched, self.language_code)
+            except Exception:
+                pass
+        return super().eventFilter(watched, event)
 
     def _setup_paths(self):
         self.data_dir = "data"
@@ -1207,6 +1279,19 @@ class AppController(QMainWindow):
                 self.settings.setValue("strategy/name", self.strategy_name)
                 broker_options = dict(getattr(config.broker, "options", None) or {})
                 self.set_market_trade_preference(broker_options.get("market_type", self.market_trade_preference))
+                self.set_forex_candle_price_component(
+                    broker_options.get("candle_price_component", self.forex_candle_price_component)
+                )
+                broker_options["market_type"] = getattr(self, "market_trade_preference", "auto")
+                broker_options["candle_price_component"] = getattr(
+                    self,
+                    "forex_candle_price_component",
+                    "bid",
+                )
+                try:
+                    config.broker.options = broker_options
+                except Exception:
+                    pass
 
                 broker_type = config.broker.type
                 exchange = config.broker.exchange or "unknown"
@@ -1616,6 +1701,32 @@ class AppController(QMainWindow):
                     if getattr(self, "connected", False):
                         self.schedule_strategy_auto_assignment(symbols=self.symbols, timeframe=self.time_frame, force=False)
 
+    def set_forex_candle_price_component(self, component):
+        normalized = _normalize_forex_candle_price_component(component)
+        self.forex_candle_price_component = normalized
+        self.settings.setValue("market_data/forex_candle_price_component", normalized)
+
+        broker_cfg = getattr(getattr(self, "config", None), "broker", None)
+        if broker_cfg is not None:
+            options = dict(getattr(broker_cfg, "options", None) or {})
+            options["candle_price_component"] = normalized
+            try:
+                broker_cfg.options = options
+            except Exception:
+                pass
+
+        broker = getattr(self, "broker", None)
+        if str(getattr(broker, "exchange_name", "") or "").strip().lower() == "oanda":
+            if hasattr(broker, "set_candle_price_component"):
+                try:
+                    broker.set_candle_price_component(normalized)
+                except Exception:
+                    pass
+            else:
+                setattr(broker, "candle_price_component", normalized)
+
+        return normalized
+
     async def request_news(self, symbol, force=False, max_age_seconds=300):
         normalized = str(symbol or "").upper().strip()
         if not normalized or not self.news_enabled:
@@ -1816,6 +1927,517 @@ class AppController(QMainWindow):
             }
         )
         return result
+
+    def _trade_symbol_parts(self, symbol):
+        normalized_symbol = str(symbol or "").strip().upper().replace("-", "/").replace("_", "/")
+        if "/" not in normalized_symbol:
+            return None, None
+        base_currency, quote_currency = normalized_symbol.split("/", 1)
+        return base_currency or None, quote_currency or None
+
+    def _display_trade_amount(self, amount_units, quantity):
+        try:
+            normalized_units = abs(float(amount_units))
+        except Exception:
+            normalized_units = 0.0
+        requested_mode = str((quantity or {}).get("requested_mode") or "units").strip().lower() or "units"
+        if requested_mode == "lots":
+            try:
+                lot_units = float(
+                    (quantity or {}).get("lot_units", self.FOREX_STANDARD_LOT_UNITS) or self.FOREX_STANDARD_LOT_UNITS
+                )
+            except Exception:
+                lot_units = self.FOREX_STANDARD_LOT_UNITS
+            if lot_units > 0:
+                return round(normalized_units / lot_units, 6)
+        return round(normalized_units, 8)
+
+    def _balance_bucket_currency_value(self, balances, bucket_name, currency):
+        if not isinstance(balances, dict):
+            return None
+        bucket = balances.get(bucket_name)
+        if not isinstance(bucket, dict):
+            return None
+        normalized_currency = str(currency or "").strip().upper()
+        if normalized_currency in bucket:
+            return self._safe_balance_metric(bucket.get(normalized_currency))
+        if len(bucket) == 1:
+            try:
+                return self._safe_balance_metric(next(iter(bucket.values())))
+            except Exception:
+                return None
+        return None
+
+    async def _resolve_trade_reference_price(self, symbol, side, order_type="market", price=None, stop_price=None):
+        candidates = []
+        for candidate in (price, stop_price):
+            try:
+                numeric_candidate = float(candidate)
+            except Exception:
+                numeric_candidate = None
+            if numeric_candidate is not None and numeric_candidate > 0:
+                candidates.append(numeric_candidate)
+        if candidates:
+            return max(candidates), None
+
+        ticker = None
+        fetch_ticker = getattr(self, "_safe_fetch_ticker", None)
+        if callable(fetch_ticker):
+            try:
+                ticker = await fetch_ticker(symbol)
+            except Exception:
+                ticker = None
+
+        if isinstance(ticker, dict):
+            price_keys = ("ask", "price", "last", "close", "mid") if str(side or "").lower() == "buy" else (
+                "bid",
+                "price",
+                "last",
+                "close",
+                "mid",
+            )
+            for key in price_keys:
+                numeric = self._safe_balance_metric(ticker.get(key))
+                if numeric is not None and numeric > 0:
+                    return float(numeric), ticker
+        return None, ticker
+
+    async def _instrument_margin_rate(self, symbol, broker=None):
+        broker = broker or getattr(self, "broker", None)
+        if broker is None:
+            return None
+        meta_loader = getattr(broker, "_get_instrument_meta", None)
+        if not callable(meta_loader):
+            return None
+        try:
+            meta = await meta_loader(symbol)
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            return None
+        for key in ("marginRate", "margin_rate"):
+            numeric = self._safe_balance_metric(meta.get(key))
+            if numeric is not None and numeric > 0:
+                return float(numeric)
+        return None
+
+    def _extract_json_object(self, text):
+        payload_text = str(text or "").strip()
+        if not payload_text:
+            return None
+        try:
+            parsed = json.loads(payload_text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+        match = re.search(r"\{.*\}", payload_text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    async def _recommend_trade_size_with_openai(
+        self,
+        *,
+        symbol,
+        side,
+        quantity,
+        requested_units,
+        deterministic_units,
+        reference_price,
+        balances,
+        closeout_guard,
+        order_type="market",
+        price=None,
+        stop_price=None,
+        stop_loss=None,
+        take_profit=None,
+    ):
+        api_key = str(getattr(self, "openai_api_key", "") or "").strip()
+        if not api_key:
+            return None
+        if reference_price is None or reference_price <= 0:
+            return None
+
+        equity = self._extract_balance_equity_value(balances if isinstance(balances, dict) else {})
+        free_margin = self._balance_metric_value(
+            balances,
+            "free_margin",
+            "available_margin",
+            "margin_available",
+            "cash",
+            "free",
+        )
+        margin_used = self._balance_metric_value(balances, "margin_used", "used_margin", "used")
+        request_context = {
+            "symbol": str(symbol or "").strip().upper(),
+            "side": str(side or "").strip().lower(),
+            "order_type": str(order_type or "market").strip().lower(),
+            "requested_amount": float((quantity or {}).get("requested_amount", 0.0) or 0.0),
+            "requested_quantity_mode": str((quantity or {}).get("requested_mode") or "units").strip().lower() or "units",
+            "requested_units": float(requested_units),
+            "hard_cap_units": float(deterministic_units),
+            "reference_price": float(reference_price),
+            "price": price,
+            "stop_price": stop_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "equity": equity,
+            "free_margin_or_cash": free_margin,
+            "margin_used": margin_used,
+            "margin_closeout_ratio": closeout_guard.get("ratio") if isinstance(closeout_guard, dict) else None,
+            "max_position_size_pct": float(getattr(self, "max_position_size_pct", 0.10) or 0.10),
+            "max_risk_per_trade": float(getattr(self, "max_risk_per_trade", 0.02) or 0.02),
+        }
+        payload = {
+            "model": self.openai_model or "gpt-5-mini",
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a trade sizing assistant inside Sopotek Trading AI. "
+                        "Recommend a conservative order size for the exact symbol and account state provided. "
+                        "Never exceed the hard_cap_units value. Never increase above the user's requested size. "
+                        "If the trade should be skipped, return recommended_units as 0. "
+                        "Return only compact JSON with keys recommended_units and reason."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(request_context, default=str),
+                },
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post("https://api.openai.com/v1/responses", json=payload, headers=headers) as response:
+                    data = await response.json(content_type=None)
+                    if response.status >= 400:
+                        self.logger.debug("OpenAI trade sizing request failed: %s", data)
+                        return None
+        except Exception:
+            self.logger.debug("OpenAI trade sizing request failed", exc_info=True)
+            return None
+
+        response_text = data.get("output_text")
+        if not isinstance(response_text, str) or not response_text.strip():
+            parts = []
+            for item in data.get("output", []) or []:
+                for content in item.get("content", []) or []:
+                    content_text = content.get("text")
+                    if isinstance(content_text, str) and content_text.strip():
+                        parts.append(content_text.strip())
+            response_text = "\n".join(parts)
+
+        recommendation = self._extract_json_object(response_text)
+        if not isinstance(recommendation, dict):
+            return None
+
+        try:
+            recommended_units = float(recommendation.get("recommended_units"))
+        except Exception:
+            return None
+        recommended_units = max(0.0, min(float(requested_units), float(deterministic_units), recommended_units))
+        return {
+            "recommended_units": recommended_units,
+            "reason": str(recommendation.get("reason") or "").strip(),
+        }
+
+    async def _preflight_trade_submission(
+        self,
+        *,
+        symbol,
+        side,
+        amount,
+        quantity_mode=None,
+        order_type="market",
+        price=None,
+        stop_price=None,
+        stop_loss=None,
+        take_profit=None,
+    ):
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            raise RuntimeError("Connect a broker before placing an order.")
+
+        quantity = self.normalize_trade_quantity(symbol, amount, quantity_mode=quantity_mode)
+        requested_units = float(quantity["amount_units"])
+        exchange_name = str(getattr(broker, "exchange_name", "") or "").strip().lower()
+
+        live_balances = {}
+        if hasattr(broker, "fetch_balance"):
+            try:
+                live_balances = await self._fetch_balances(broker) or {}
+            except Exception:
+                self.logger.debug("Order preflight balance fetch failed for %s", symbol, exc_info=True)
+                live_balances = {}
+        balances = live_balances if isinstance(live_balances, dict) and live_balances else dict(getattr(self, "balances", {}) or {})
+        if isinstance(live_balances, dict) and live_balances:
+            self.balances = live_balances
+            self.balance = live_balances
+
+        closeout_guard = self.margin_closeout_snapshot(balances)
+        if closeout_guard.get("blocked"):
+            raise RuntimeError(str(closeout_guard.get("reason") or "Margin closeout guard blocked the trade."))
+
+        reference_price, _ticker = await self._resolve_trade_reference_price(
+            symbol,
+            side,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+        )
+        base_currency, quote_currency = self._trade_symbol_parts(symbol)
+        free_margin = self._balance_metric_value(
+            balances,
+            "free_margin",
+            "available_margin",
+            "margin_available",
+        )
+        available_cash = self._balance_metric_value(
+            balances,
+            "cash",
+            "buying_power",
+            "available_funds",
+            "free",
+        )
+        equity = self._extract_balance_equity_value(balances if isinstance(balances, dict) else {})
+
+        hard_caps = []
+        sizing_notes = []
+        side_value = str(side or "").strip().lower() or "buy"
+
+        if equity is not None and equity <= 0:
+            raise RuntimeError("Account equity is zero. New trades are blocked.")
+
+        if exchange_name != "oanda" and base_currency and quote_currency:
+            free_quote_balance = self._balance_bucket_currency_value(balances, "free", quote_currency)
+            free_base_balance = self._balance_bucket_currency_value(balances, "free", base_currency)
+            if side_value == "buy" and free_quote_balance is not None and reference_price and reference_price > 0:
+                if free_quote_balance <= 0:
+                    raise RuntimeError(f"No available {quote_currency} balance to buy {symbol}.")
+                quote_cap = max(0.0, float(free_quote_balance) * self.ORDER_SIZE_BUFFER / float(reference_price))
+                hard_caps.append(quote_cap)
+                if quote_cap + 1e-12 < requested_units:
+                    sizing_notes.append(f"Available {quote_currency} balance reduced the order size.")
+            if side_value == "sell" and free_base_balance is not None:
+                if free_base_balance <= 0:
+                    raise RuntimeError(f"No available {base_currency} balance to sell {symbol}.")
+                base_cap = max(0.0, float(free_base_balance) * self.ORDER_SIZE_BUFFER)
+                hard_caps.append(base_cap)
+                if base_cap + 1e-12 < requested_units:
+                    sizing_notes.append(f"Available {base_currency} balance reduced the order size.")
+        elif side_value == "buy" and available_cash is not None and reference_price and reference_price > 0 and exchange_name != "oanda":
+            if available_cash <= 0:
+                raise RuntimeError(f"No available cash balance to buy {symbol}.")
+            cash_cap = max(0.0, float(available_cash) * self.ORDER_SIZE_BUFFER / float(reference_price))
+            hard_caps.append(cash_cap)
+            if cash_cap + 1e-12 < requested_units:
+                sizing_notes.append("Available cash balance reduced the order size.")
+
+        margin_rate = await self._instrument_margin_rate(symbol, broker=broker)
+        if reference_price and reference_price > 0 and free_margin is not None and margin_rate is not None and margin_rate > 0:
+            if free_margin <= 0:
+                raise RuntimeError("No free margin is available for a new leveraged trade.")
+            margin_cap = max(
+                0.0,
+                float(free_margin) * self.ORDER_SIZE_BUFFER / (float(reference_price) * float(margin_rate)),
+            )
+            hard_caps.append(margin_cap)
+            if margin_cap + 1e-12 < requested_units:
+                sizing_notes.append("Free margin reduced the order size for this symbol.")
+
+        trading_system = getattr(self, "trading_system", None)
+        risk_engine = getattr(trading_system, "risk_engine", None)
+        if risk_engine is not None and equity is not None and hasattr(risk_engine, "sync_equity"):
+            try:
+                risk_engine.sync_equity(equity)
+            except Exception:
+                self.logger.debug("Risk engine equity sync failed during order preflight", exc_info=True)
+        if risk_engine is not None and reference_price and reference_price > 0 and hasattr(risk_engine, "adjust_trade"):
+            try:
+                allowed, adjusted_units, risk_reason = risk_engine.adjust_trade(float(reference_price), requested_units)
+            except Exception:
+                self.logger.debug("Risk engine preflight check failed for %s", symbol, exc_info=True)
+                allowed, adjusted_units, risk_reason = True, requested_units, ""
+            if not allowed:
+                raise RuntimeError(str(risk_reason or "Risk engine rejected the trade."))
+            adjusted_units = max(0.0, float(adjusted_units))
+            hard_caps.append(adjusted_units)
+            if adjusted_units + 1e-12 < requested_units:
+                sizing_notes.append(str(risk_reason or "Risk settings reduced the order size.").strip())
+        elif equity is not None and reference_price and reference_price > 0:
+            max_position_size_pct = max(0.001, float(getattr(self, "max_position_size_pct", 0.10) or 0.10))
+            risk_cap = max(0.0, float(equity) * max_position_size_pct / float(reference_price))
+            hard_caps.append(risk_cap)
+            if risk_cap + 1e-12 < requested_units:
+                sizing_notes.append(f"Risk settings capped the order to {max_position_size_pct:.1%} of equity.")
+
+        deterministic_units = requested_units
+        positive_caps = [float(cap) for cap in hard_caps if cap is not None and float(cap) > 0]
+        if positive_caps:
+            deterministic_units = min([requested_units, *positive_caps])
+        if deterministic_units <= 0:
+            raise RuntimeError("No safe order size is available with the current balance, margin, and risk settings.")
+
+        ai_recommendation = await self._recommend_trade_size_with_openai(
+            symbol=symbol,
+            side=side_value,
+            quantity=quantity,
+            requested_units=requested_units,
+            deterministic_units=deterministic_units,
+            reference_price=reference_price,
+            balances=balances,
+            closeout_guard=closeout_guard,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+        final_units = deterministic_units
+        ai_adjusted = False
+        if isinstance(ai_recommendation, dict):
+            ai_units = max(0.0, float(ai_recommendation.get("recommended_units", deterministic_units) or 0.0))
+            if ai_units <= 0:
+                raise RuntimeError(str(ai_recommendation.get("reason") or "OpenAI sizing recommended skipping this trade."))
+            if ai_units + 1e-12 < final_units:
+                final_units = ai_units
+                ai_adjusted = True
+                ai_reason = str(ai_recommendation.get("reason") or "").strip()
+                if ai_reason:
+                    sizing_notes.append(ai_reason)
+
+        if closeout_guard.get("warning") and not closeout_guard.get("blocked"):
+            warning_reason = str(closeout_guard.get("reason") or "").strip()
+            if warning_reason:
+                sizing_notes.append(warning_reason)
+
+        size_adjusted = abs(final_units - requested_units) > 1e-9
+        applied_display_amount = self._display_trade_amount(final_units, quantity)
+        summary_parts = []
+        if abs(deterministic_units - requested_units) > 1e-9:
+            summary_parts.append(
+                f"Preflight reduced the order to {applied_display_amount} {quantity['requested_mode']} using balance, margin, or risk limits."
+            )
+        if ai_adjusted:
+            summary_parts.append("OpenAI sizing guidance was applied.")
+        if not summary_parts:
+            summary_parts.append("Preflight kept the requested size.")
+
+        prepared = dict(quantity)
+        prepared.update(
+            {
+                "requested_amount_units": requested_units,
+                "amount_units": float(final_units),
+                "deterministic_amount_units": float(deterministic_units),
+                "reference_price": float(reference_price) if reference_price is not None else None,
+                "balances": balances,
+                "closeout_guard": closeout_guard,
+                "size_adjusted": size_adjusted,
+                "ai_adjusted": ai_adjusted,
+                "applied_requested_mode_amount": applied_display_amount,
+                "sizing_summary": " ".join(part for part in summary_parts if part).strip(),
+                "sizing_notes": [note for note in sizing_notes if note],
+                "ai_sizing_reason": str((ai_recommendation or {}).get("reason") or "").strip(),
+            }
+        )
+        return prepared
+
+    async def submit_trade_with_preflight(
+        self,
+        *,
+        symbol,
+        side,
+        amount,
+        quantity_mode=None,
+        order_type="market",
+        price=None,
+        stop_price=None,
+        stop_loss=None,
+        take_profit=None,
+        source="manual",
+        strategy_name="Manual",
+        reason="Manual order",
+    ):
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            raise RuntimeError("Connect a broker before placing an order.")
+
+        preflight = await self._preflight_trade_submission(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            quantity_mode=quantity_mode,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+        amount_units = float(preflight["amount_units"])
+
+        trading_system = getattr(self, "trading_system", None)
+        execution_manager = getattr(trading_system, "execution_manager", None)
+        if execution_manager is not None:
+            order = await execution_manager.execute(
+                symbol=symbol,
+                side=side,
+                amount=amount_units,
+                type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                source=source,
+                strategy_name=strategy_name,
+                reason=reason,
+                confidence=1.0,
+            )
+        else:
+            order = await broker.create_order(
+                symbol=symbol,
+                side=side,
+                amount=amount_units,
+                type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+            if isinstance(order, dict):
+                order.setdefault("source", source)
+                order.setdefault("strategy_name", strategy_name)
+                order.setdefault("reason", reason)
+
+        if not order:
+            raise RuntimeError("The order was skipped by broker or safety checks.")
+
+        if isinstance(order, dict):
+            actual_amount_units = self._safe_balance_metric(order.get("amount"))
+            if actual_amount_units is None:
+                actual_amount_units = amount_units
+            order["requested_amount"] = float(preflight["requested_amount"])
+            order["requested_quantity_mode"] = preflight["requested_mode"]
+            order["amount_units"] = float(actual_amount_units)
+            order["applied_requested_mode_amount"] = self._display_trade_amount(actual_amount_units, preflight)
+            order["size_adjusted"] = abs(float(actual_amount_units) - float(preflight["requested_amount_units"])) > 1e-9
+            order["ai_adjusted"] = bool(preflight.get("ai_adjusted"))
+            order["reference_price"] = preflight.get("reference_price")
+            order["sizing_summary"] = preflight.get("sizing_summary")
+            order["sizing_notes"] = list(preflight.get("sizing_notes", []) or [])
+            order["ai_sizing_reason"] = preflight.get("ai_sizing_reason")
+            order["closeout_guard"] = dict(preflight.get("closeout_guard") or {})
+        return order
 
     def _normalize_strategy_symbol_key(self, symbol):
         return str(symbol or "").strip().upper().replace("-", "/").replace("_", "/")
@@ -2025,8 +2647,8 @@ class AppController(QMainWindow):
         if window is not None and hasattr(terminal, "_refresh_strategy_assignment_window"):
             try:
                 terminal._refresh_strategy_assignment_window(window=window, message=snapshot.get("message"))
-            except Exception:
-                pass
+            except Exception as error:
+                self.logger.debug("Failed to refresh strategy assignment window with progress update", exc_info=True)
         return snapshot
 
     def _strategy_registry_for_auto_assignment(self):
@@ -2770,53 +3392,20 @@ class AppController(QMainWindow):
         stop_loss=None,
         take_profit=None,
     ):
-        broker = getattr(self, "broker", None)
-        if broker is None:
-            raise RuntimeError("Connect a broker before placing a trade from Sopotek Pilot.")
-
-        quantity = self.normalize_trade_quantity(symbol, amount, quantity_mode=quantity_mode)
-        amount_units = float(quantity["amount_units"])
-
-        trading_system = getattr(self, "trading_system", None)
-        execution_manager = getattr(trading_system, "execution_manager", None)
-        if execution_manager is not None:
-            order = await execution_manager.execute(
-                symbol=symbol,
-                side=side,
-                amount=amount_units,
-                type=order_type,
-                price=price,
-                stop_price=stop_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                source="chatgpt",
-                strategy_name="Sopotek Pilot",
-                reason="Sopotek Pilot trade command",
-                confidence=1.0,
-            )
-        else:
-            order = await broker.create_order(
-                symbol=symbol,
-                side=side,
-                amount=amount_units,
-                type=order_type,
-                price=price,
-                stop_price=stop_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-            )
-            if isinstance(order, dict):
-                order.setdefault("source", "chatgpt")
-                order.setdefault("strategy_name", "Sopotek Pilot")
-                order.setdefault("reason", "Sopotek Pilot trade command")
-        if isinstance(order, dict):
-            order.setdefault("requested_amount", float(quantity["requested_amount"]))
-            order.setdefault("requested_quantity_mode", quantity["requested_mode"])
-            order.setdefault("amount_units", amount_units)
-
-        if not order:
-            raise RuntimeError("The order was skipped by broker or safety checks.")
-        return order
+        return await self.submit_trade_with_preflight(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            quantity_mode=quantity_mode,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            source="chatgpt",
+            strategy_name="Sopotek Pilot",
+            reason="Sopotek Pilot trade command",
+        )
 
     def market_chat_position_summary(self, open_window=True):
         terminal = getattr(self, "terminal", None)
@@ -3480,11 +4069,17 @@ class AppController(QMainWindow):
 
         resolved_amount = None
         if amount is not None:
-            try:
-                quantity = self.normalize_trade_quantity(normalized_symbol, amount, quantity_mode=quantity_mode)
-            except ValueError as exc:
-                raise RuntimeError(str(exc)) from exc
-            resolved_amount = float(quantity["amount_units"])
+            if quantity_mode is None and isinstance(target, dict):
+                try:
+                    resolved_amount = abs(float(amount))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("Close position amount must be numeric.") from exc
+            else:
+                try:
+                    quantity = self.normalize_trade_quantity(normalized_symbol, amount, quantity_mode=quantity_mode)
+                except ValueError as exc:
+                    raise RuntimeError(str(exc)) from exc
+                resolved_amount = float(quantity["amount_units"])
 
         result = None
         if hasattr(broker, "close_position"):
@@ -4169,14 +4764,29 @@ class AppController(QMainWindow):
 
             status = str(order.get("status") or "submitted").replace("_", " ").upper()
             order_id = str(order.get("order_id") or order.get("id") or "-")
+            amount_mode = str(order.get("requested_quantity_mode") or quantity_mode or "units").strip() or "units"
+            applied_amount = order.get("applied_requested_mode_amount", amount)
+            requested_amount = order.get("requested_amount", amount)
+            sizing_summary = str(order.get("sizing_summary") or "").strip()
+            ai_sizing_reason = str(order.get("ai_sizing_reason") or "").strip()
+            requested_line = (
+                f"\nRequested Amount: {requested_amount} {amount_mode}"
+                if bool(order.get("size_adjusted"))
+                else ""
+            )
+            sizing_line = f"\nSizing: {sizing_summary}" if sizing_summary else ""
+            ai_line = f"\nChatGPT Size Note: {ai_sizing_reason}" if ai_sizing_reason else ""
             return (
                 f"Trade command executed.\n"
                 f"Status: {status}\n"
                 f"Symbol: {symbol.upper()}\n"
                 f"Side: {side.upper()}\n"
-                f"Amount: {amount} {quantity_mode or 'units'}\n"
+                f"Amount: {applied_amount} {amount_mode}\n"
                 f"Type: {resolved_type.upper()}\n"
                 f"Order ID: {order_id}"
+                f"{requested_line}"
+                f"{sizing_line}"
+                f"{ai_line}"
             )
 
         market_symbol = self._resolve_market_chat_symbol(question)
@@ -4583,12 +5193,46 @@ class AppController(QMainWindow):
 
         return None
 
+    def _active_market_data_exchange_code(self):
+        exchange = self._active_exchange_code()
+        if exchange == "oanda":
+            component = _normalize_forex_candle_price_component(
+                getattr(self, "forex_candle_price_component", "bid")
+            )
+            return f"{exchange}:{component}"
+        return exchange
+
+    def _filter_ohlcv_rows_by_time_range(self, rows, start_time=None, end_time=None):
+        start_boundary = _normalize_history_boundary(start_time, end_of_day=False)
+        end_boundary = _normalize_history_boundary(end_time, end_of_day=True)
+        if start_boundary is None and end_boundary is None:
+            return list(rows or [])
+
+        filtered = []
+        for row in rows or []:
+            if not isinstance(row, (list, tuple)) or len(row) < 6:
+                continue
+            try:
+                timestamp = pd.Timestamp(row[0])
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.tz_localize("UTC")
+                else:
+                    timestamp = timestamp.tz_convert("UTC")
+            except Exception:
+                continue
+            if start_boundary is not None and timestamp < start_boundary:
+                continue
+            if end_boundary is not None and timestamp > end_boundary:
+                continue
+            filtered.append(list(row[:6]))
+        return filtered
+
     async def _persist_candles_to_db(self, symbol, timeframe, candles):
         repository = getattr(self, "market_data_repository", None)
         if repository is None or not candles:
             return 0
 
-        exchange = self._active_exchange_code()
+        exchange = self._active_market_data_exchange_code()
         try:
             return await asyncio.to_thread(
                 repository.save_candles,
@@ -4601,12 +5245,12 @@ class AppController(QMainWindow):
             self.logger.debug("Candle persistence failed for %s %s: %s", symbol, timeframe, exc)
             return 0
 
-    async def _load_candles_from_db(self, symbol, timeframe="1h", limit=200):
+    async def _load_candles_from_db(self, symbol, timeframe="1h", limit=200, start_time=None, end_time=None):
         repository = getattr(self, "market_data_repository", None)
         if repository is None:
             return []
 
-        exchange = self._active_exchange_code()
+        exchange = self._active_market_data_exchange_code()
         try:
             return await asyncio.to_thread(
                 repository.get_candles,
@@ -4614,6 +5258,8 @@ class AppController(QMainWindow):
                 timeframe,
                 limit,
                 exchange,
+                start_time,
+                end_time,
             )
         except Exception as exc:
             self.logger.debug("Candle DB load failed for %s %s: %s", symbol, timeframe, exc)
@@ -5525,13 +6171,15 @@ class AppController(QMainWindow):
             f"{name}: {count}"
             for name, count in sorted((stats.get("source_breakdown") or {}).items(), key=lambda item: item[1], reverse=True)
         ]
+        win_rate = self._safe_balance_metric(stats.get("win_rate"))
+        win_rate_text = "-" if win_rate is None else f"{win_rate * 100.0:.1f}%"
         lines = [
             "Trade history analysis loaded.",
             (
                 f"Trades: {stats.get('trade_count', 0)}"
                 f" | With PnL: {stats.get('pnl_count', 0)}"
                 f" | Net PnL: {float(stats.get('net_pnl', 0.0) or 0.0):.2f}"
-                f" | Win rate: {('-' if stats.get('win_rate') is None else f'{float(stats.get('win_rate')) * 100.0:.1f}%')}"
+                f" | Win rate: {win_rate_text}"
             ),
         ]
         if stats.get("avg_pnl") is not None or stats.get("profit_factor") is not None:
@@ -6402,21 +7050,57 @@ class AppController(QMainWindow):
             return {"ok": True, "message": "\n".join(parts)}
         return {"ok": False, "message": "OpenAI returned no text."}
 
-    async def _safe_fetch_ohlcv(self, symbol, timeframe="1h", limit=200):
+    async def _safe_fetch_ohlcv(self, symbol, timeframe="1h", limit=200, start_time=None, end_time=None):
         limit = self._resolve_history_limit(limit)
+        range_requested = start_time is not None or end_time is not None
         # Preferred native broker OHLCV.
         if self.broker and hasattr(self.broker, "fetch_ohlcv"):
             try:
-                data = await self.broker.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                data = await self.broker.fetch_ohlcv(
+                    symbol,
+                    timeframe=timeframe,
+                    limit=limit,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+                if range_requested and data:
+                    data = self._filter_ohlcv_rows_by_time_range(
+                        data,
+                        start_time=start_time,
+                        end_time=end_time,
+                    )
                 if data:
                     await self._persist_candles_to_db(symbol, timeframe, data)
                     return data
+            except TypeError:
+                try:
+                    data = await self.broker.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+                    if range_requested and data:
+                        data = self._filter_ohlcv_rows_by_time_range(
+                            data,
+                            start_time=start_time,
+                            end_time=end_time,
+                        )
+                    if data:
+                        await self._persist_candles_to_db(symbol, timeframe, data)
+                        return data
+                except Exception:
+                    pass
             except Exception:
                 pass
 
-        cached_data = await self._load_candles_from_db(symbol, timeframe=timeframe, limit=limit)
+        cached_data = await self._load_candles_from_db(
+            symbol,
+            timeframe=timeframe,
+            limit=limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
         if cached_data:
             return cached_data
+
+        if range_requested:
+            return []
 
         # Fallback: synthesize tiny OHLCV from latest tick.
         tick = await self._safe_fetch_ticker(symbol)
@@ -6626,14 +7310,27 @@ class AppController(QMainWindow):
 
         self.strategy_debug_signal.emit(payload)
 
-    async def request_candle_data(self, symbol, timeframe="1h", limit=None):
+    async def request_candle_data(self, symbol, timeframe="1h", limit=None, start_time=None, end_time=None):
         if not symbol:
             return
 
         limit = self._resolve_history_limit(limit)
-        candles = await self._safe_fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        try:
+            candles = await self._safe_fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except TypeError as exc:
+            message = str(exc)
+            if "start_time" not in message and "end_time" not in message:
+                raise
+            candles = await self._safe_fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         received_count = len(candles) if isinstance(candles, list) else 0
-        self._notify_market_data_shortfall(symbol, timeframe, received_count, limit)
+        if start_time is None and end_time is None:
+            self._notify_market_data_shortfall(symbol, timeframe, received_count, limit)
         if not candles:
             return
 

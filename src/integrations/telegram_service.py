@@ -65,7 +65,15 @@ class TelegramService:
         side = str(trade.get("side") or "-").upper()
         status = str(trade.get("status") or "-").upper()
         price = trade.get("price", "-")
-        size = trade.get("size", trade.get("amount", "-"))
+        raw_size = trade.get("size", trade.get("amount", "-"))
+        display_size = trade.get("applied_requested_mode_amount")
+        display_mode = str(trade.get("requested_quantity_mode") or "").strip().lower()
+        if display_size not in (None, "") and display_mode:
+            size = f"{display_size} {display_mode}"
+            if display_mode != "units" and raw_size not in (None, ""):
+                size = f"{size} ({raw_size} units)"
+        else:
+            size = raw_size
         pnl = trade.get("pnl", "-")
         order_id = trade.get("order_id", trade.get("id", "-"))
         timestamp = trade.get("timestamp") or datetime.utcnow().isoformat()

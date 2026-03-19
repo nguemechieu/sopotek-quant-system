@@ -405,6 +405,192 @@ TRANSLATIONS = {
 }
 
 
+LITERAL_TRANSLATIONS = {
+    "CONNECT": {"en": "CONNECT", "fr": "CONNECTER", "es": "CONECTAR", "pt": "CONECTAR"},
+    "Strategy": {"en": "Strategy", "fr": "Strategie", "es": "Estrategia", "pt": "Estrategia"},
+    "Emergency Kill Switch": {
+        "en": "Emergency Kill Switch",
+        "fr": "Arret d urgence",
+        "es": "Interruptor de emergencia",
+        "pt": "Parada de emergencia",
+    },
+    "Strategy Optimization": {
+        "en": "Strategy Optimization",
+        "fr": "Optimisation de strategie",
+        "es": "Optimizacion de estrategia",
+        "pt": "Otimizacao de estrategia",
+    },
+    "Detach Current Tab": {
+        "en": "Detach Current Tab",
+        "fr": "Detacher l onglet actif",
+        "es": "Separar pestana actual",
+        "pt": "Desanexar aba atual",
+    },
+    "Reattach Active Chart": {
+        "en": "Reattach Active Chart",
+        "fr": "Rattacher le graphique actif",
+        "es": "Reanclar grafico activo",
+        "pt": "Reanexar grafico ativo",
+    },
+    "Tile Chart Windows": {
+        "en": "Tile Chart Windows",
+        "fr": "Mosaïque des fenetres de graphique",
+        "es": "Organizar ventanas de graficos",
+        "pt": "Organizar janelas de graficos",
+    },
+    "Cascade Chart Windows": {
+        "en": "Cascade Chart Windows",
+        "fr": "Cascader les fenetres de graphique",
+        "es": "Cascada de ventanas de graficos",
+        "pt": "Cascata de janelas de graficos",
+    },
+    "Volume Bar": {"en": "Volume Bar", "fr": "Barre de volume", "es": "Barra de volumen", "pt": "Barra de volume"},
+    "Sopotek Pilot": {"en": "Sopotek Pilot", "fr": "Sopotek Pilot", "es": "Sopotek Pilot", "pt": "Sopotek Pilot"},
+    "Recommendations": {"en": "Recommendations", "fr": "Recommandations", "es": "Recomendaciones", "pt": "Recomendacoes"},
+    "Closed Journal": {"en": "Closed Journal", "fr": "Journal ferme", "es": "Diario cerrado", "pt": "Diario fechado"},
+    "Trade Checklist": {"en": "Trade Checklist", "fr": "Checklist de trade", "es": "Checklist de trading", "pt": "Checklist de trade"},
+    "Journal Review": {"en": "Journal Review", "fr": "Revue du journal", "es": "Revision del diario", "pt": "Revisao do diario"},
+    "System Health": {"en": "System Health", "fr": "Sante systeme", "es": "Salud del sistema", "pt": "Saude do sistema"},
+    "Quant PM": {"en": "Quant PM", "fr": "Quant PM", "es": "Quant PM", "pt": "Quant PM"},
+    "ML Research Lab": {"en": "ML Research Lab", "fr": "Lab recherche ML", "es": "Laboratorio ML", "pt": "Laboratorio ML"},
+    "Position Analysis": {"en": "Position Analysis", "fr": "Analyse des positions", "es": "Analisis de posiciones", "pt": "Analise de posicoes"},
+    "Strategy Assigner": {"en": "Strategy Assigner", "fr": "Affectation strategie", "es": "Asignador de estrategia", "pt": "Atribuidor de estrategia"},
+    "Strategy Scorecard": {"en": "Strategy Scorecard", "fr": "Score strategie", "es": "Tarjeta de estrategia", "pt": "Painel de estrategia"},
+    "Strategy Debug": {"en": "Strategy Debug", "fr": "Debug strategie", "es": "Depuracion de estrategia", "pt": "Debug de estrategia"},
+    "System Console": {"en": "System Console", "fr": "Console systeme", "es": "Consola del sistema", "pt": "Console do sistema"},
+    "System Status": {"en": "System Status", "fr": "Statut systeme", "es": "Estado del sistema", "pt": "Status do sistema"},
+    "Stellar Asset Explorer": {
+        "en": "Stellar Asset Explorer",
+        "fr": "Explorateur d actifs Stellar",
+        "es": "Explorador de activos Stellar",
+        "pt": "Explorador de ativos Stellar",
+    },
+    "License": {"en": "License", "fr": "Licence", "es": "Licencia", "pt": "Licenca"},
+    "Status": {"en": "Status", "fr": "Statut", "es": "Estado", "pt": "Status"},
+    "Show or hide the System Status panel": {
+        "en": "Show or hide the System Status panel",
+        "fr": "Afficher ou masquer le panneau de statut systeme",
+        "es": "Mostrar u ocultar el panel de estado del sistema",
+        "pt": "Mostrar ou ocultar o painel de status do sistema",
+    },
+    "Shows whether AI trading is currently active": {
+        "en": "Shows whether AI trading is currently active",
+        "fr": "Indique si le trading IA est actif",
+        "es": "Muestra si el trading IA esta activo",
+        "pt": "Mostra se o trading IA esta ativo",
+    },
+    "Timeframe": {"en": "Timeframe", "fr": "Unite", "es": "Marco temporal", "pt": "Periodo"},
+    "Info": {"en": "Info", "fr": "Infos", "es": "Info", "pt": "Info"},
+    "Candlestick": {"en": "Candlestick", "fr": "Bougies", "es": "Velas", "pt": "Candles"},
+    "Depth Chart": {"en": "Depth Chart", "fr": "Graphique de profondeur", "es": "Grafico de profundidad", "pt": "Grafico de profundidade"},
+    "Market Info": {"en": "Market Info", "fr": "Infos marche", "es": "Info de mercado", "pt": "Info de mercado"},
+    "Select the timeframe for this chart.": {
+        "en": "Select the timeframe for this chart.",
+        "fr": "Selectionnez l unite de temps pour ce graphique.",
+        "es": "Selecciona el marco temporal para este grafico.",
+        "pt": "Selecione o periodo para este grafico.",
+    },
+    "Depth chart will populate when live order book data arrives.": {
+        "en": "Depth chart will populate when live order book data arrives.",
+        "fr": "Le graphique de profondeur se remplira avec le carnet en direct.",
+        "es": "El grafico de profundidad se llenara con el libro de ordenes en vivo.",
+        "pt": "O grafico de profundidade sera preenchido com o livro de ofertas ao vivo.",
+    },
+    "Market details will update with ticker, candle, and order book context.": {
+        "en": "Market details will update with ticker, candle, and order book context.",
+        "fr": "Les details de marche seront mis a jour avec ticker, bougies et carnet.",
+        "es": "Los detalles del mercado se actualizaran con ticker, velas y libro de ordenes.",
+        "pt": "Os detalhes do mercado serao atualizados com ticker, candles e livro de ofertas.",
+    },
+    "Price": {"en": "Price", "fr": "Prix", "es": "Precio", "pt": "Preco"},
+    "Volume": {"en": "Volume", "fr": "Volume", "es": "Volumen", "pt": "Volume"},
+    "Orderbook": {"en": "Orderbook", "fr": "Carnet d ordres", "es": "Libro de ordenes", "pt": "Livro de ofertas"},
+    "Date / Time (UTC)": {"en": "Date / Time (UTC)", "fr": "Date / Heure (UTC)", "es": "Fecha / Hora (UTC)", "pt": "Data / Hora (UTC)"},
+    "Last": {"en": "Last", "fr": "Dernier", "es": "Ultimo", "pt": "Ultimo"},
+    "Mid": {"en": "Mid", "fr": "Milieu", "es": "Medio", "pt": "Medio"},
+    "Spread": {"en": "Spread", "fr": "Spread", "es": "Spread", "pt": "Spread"},
+    "Best Bid": {"en": "Best Bid", "fr": "Meilleur bid", "es": "Mejor bid", "pt": "Melhor bid"},
+    "Best Ask": {"en": "Best Ask", "fr": "Mejor ask", "es": "Mejor ask", "pt": "Melhor ask"},
+    "Range": {"en": "Range", "fr": "Plage", "es": "Rango", "pt": "Faixa"},
+    "Visible Vol": {"en": "Visible Vol", "fr": "Vol visible", "es": "Vol visible", "pt": "Vol visivel"},
+    "Depth Bias": {"en": "Depth Bias", "fr": "Biais profondeur", "es": "Sesgo de profundidad", "pt": "Vies de profundidade"},
+    "Market Watch": {"en": "Market Watch", "fr": "Surveillance marche", "es": "Vigilancia de mercado", "pt": "Monitor de mercado"},
+    "Tick Chart": {"en": "Tick Chart", "fr": "Graphique tick", "es": "Grafico tick", "pt": "Grafico tick"},
+    "Equity Curve": {"en": "Equity Curve", "fr": "Courbe d equity", "es": "Curva de equity", "pt": "Curva de equity"},
+    "Performance": {"en": "Performance", "fr": "Performance", "es": "Rendimiento", "pt": "Performance"},
+    "Market Regime": {"en": "Market Regime", "fr": "Regime de marche", "es": "Regimen de mercado", "pt": "Regime de mercado"},
+    "Portfolio Exposure": {"en": "Portfolio Exposure", "fr": "Exposition portefeuille", "es": "Exposicion de cartera", "pt": "Exposicao da carteira"},
+    "Model Confidence": {"en": "Model Confidence", "fr": "Confiance modele", "es": "Confianza del modelo", "pt": "Confianca do modelo"},
+    "Watch": {"en": "Watch", "fr": "Suivi", "es": "Seguir", "pt": "Observar"},
+    "Symbol": {"en": "Symbol", "fr": "Symbole", "es": "Simbolo", "pt": "Simbolo"},
+    "Bid": {"en": "Bid", "fr": "Bid", "es": "Bid", "pt": "Bid"},
+    "Ask": {"en": "Ask", "fr": "Ask", "es": "Ask", "pt": "Ask"},
+    "USD Value": {"en": "USD Value", "fr": "Valeur USD", "es": "Valor USD", "pt": "Valor USD"},
+    "AI Training": {"en": "AI Training", "fr": "Entrainement IA", "es": "Entrenamiento IA", "pt": "Treinamento IA"},
+    "Action": {"en": "Action", "fr": "Action", "es": "Accion", "pt": "Acao"},
+    "Side": {"en": "Side", "fr": "Sens", "es": "Lado", "pt": "Lado"},
+    "Units": {"en": "Units", "fr": "Unites", "es": "Unidades", "pt": "Unidades"},
+    "Amount": {"en": "Amount", "fr": "Montant", "es": "Cantidad", "pt": "Quantidade"},
+    "Entry": {"en": "Entry", "fr": "Entree", "es": "Entrada", "pt": "Entrada"},
+    "Mark": {"en": "Mark", "fr": "Marque", "es": "Marca", "pt": "Marcacao"},
+    "Value": {"en": "Value", "fr": "Valeur", "es": "Valor", "pt": "Valor"},
+    "Unrealized P/L": {"en": "Unrealized P/L", "fr": "P/L latent", "es": "P/L no realizado", "pt": "P/L nao realizado"},
+    "Realized P/L": {"en": "Realized P/L", "fr": "P/L realise", "es": "P/L realizado", "pt": "P/L realizado"},
+    "Financing": {"en": "Financing", "fr": "Financement", "es": "Financiacion", "pt": "Financiamento"},
+    "Margin Used": {"en": "Margin Used", "fr": "Marge utilisee", "es": "Margen usado", "pt": "Margem usada"},
+    "Resettable P/L": {"en": "Resettable P/L", "fr": "P/L reinitialisable", "es": "P/L reiniciable", "pt": "P/L reiniciavel"},
+    "Mode": {"en": "Mode", "fr": "Mode", "es": "Modo", "pt": "Modo"},
+    "Trades": {"en": "Trades", "fr": "Trades", "es": "Operaciones", "pt": "Trades"},
+    "Win Rate": {"en": "Win Rate", "fr": "Taux de gain", "es": "Tasa de acierto", "pt": "Taxa de acerto"},
+    "Avg PnL": {"en": "Avg PnL", "fr": "PnL moyen", "es": "PnL medio", "pt": "PnL medio"},
+    "Fees": {"en": "Fees", "fr": "Frais", "es": "Comisiones", "pt": "Taxas"},
+    "Check": {"en": "Check", "fr": "Controle", "es": "Chequeo", "pt": "Cheque"},
+    "Detail": {"en": "Detail", "fr": "Detail", "es": "Detalle", "pt": "Detalhe"},
+    "Source": {"en": "Source", "fr": "Source", "es": "Fuente", "pt": "Fonte"},
+    "Confidence": {"en": "Confidence", "fr": "Confiance", "es": "Confianza", "pt": "Confianca"},
+    "Why": {"en": "Why", "fr": "Pourquoi", "es": "Por que", "pt": "Por que"},
+    "Time": {"en": "Time", "fr": "Heure", "es": "Hora", "pt": "Hora"},
+    "Direction": {"en": "Direction", "fr": "Direction", "es": "Direccion", "pt": "Direcao"},
+    "Exposure": {"en": "Exposure", "fr": "Exposition", "es": "Exposicion", "pt": "Exposicao"},
+    "% Equity": {"en": "% Equity", "fr": "% Equity", "es": "% Equity", "pt": "% Equity"},
+    "Ranked": {"en": "Ranked", "fr": "Classe", "es": "Clasificado", "pt": "Rankeado"},
+    "Live": {"en": "Live", "fr": "Live", "es": "Live", "pt": "Live"},
+    "Agent": {"en": "Agent", "fr": "Agent", "es": "Agente", "pt": "Agente"},
+    "Stage": {"en": "Stage", "fr": "Etape", "es": "Etapa", "pt": "Etapa"},
+    "Samples": {"en": "Samples", "fr": "Echantillons", "es": "Muestras", "pt": "Amostras"},
+    "Avg P/L": {"en": "Avg P/L", "fr": "P/L moyen", "es": "P/L medio", "pt": "P/L medio"},
+    "Scope": {"en": "Scope", "fr": "Portee", "es": "Alcance", "pt": "Escopo"},
+    "Experiment": {"en": "Experiment", "fr": "Experience", "es": "Experimento", "pt": "Experimento"},
+    "Window": {"en": "Window", "fr": "Fenetre", "es": "Ventana", "pt": "Janela"},
+    "Train Rows": {"en": "Train Rows", "fr": "Lignes train", "es": "Filas train", "pt": "Linhas train"},
+    "Test Rows": {"en": "Test Rows", "fr": "Lignes test", "es": "Filas test", "pt": "Linhas test"},
+    "Accuracy": {"en": "Accuracy", "fr": "Precision", "es": "Exactitud", "pt": "Acuracia"},
+    "Precision": {"en": "Precision", "fr": "Precision", "es": "Precision", "pt": "Precisao"},
+    "Recall": {"en": "Recall", "fr": "Rappel", "es": "Recall", "pt": "Recall"},
+    "Avg Conf.": {"en": "Avg Conf.", "fr": "Conf moy.", "es": "Conf prom.", "pt": "Conf media"},
+}
+
+
+def _build_source_text_translations():
+    source_texts = {}
+    localized_to_source = {}
+
+    for options in list(TRANSLATIONS.values()) + list(LITERAL_TRANSLATIONS.values()):
+        english = str(options.get("en") or "").strip()
+        if not english:
+            continue
+        source_texts.setdefault(english, options)
+        for localized in options.values():
+            text = str(localized or "").strip()
+            if text:
+                localized_to_source[text] = english
+
+    return source_texts, localized_to_source
+
+
+SOURCE_TEXT_TRANSLATIONS, LOCALIZED_TEXT_TO_SOURCE = _build_source_text_translations()
+
+
 def normalize_language_code(code):
     text = str(code or DEFAULT_LANGUAGE).strip().lower()
     if text in SUPPORTED_LANGUAGES:
@@ -435,3 +621,232 @@ def translate(language_code, key, **kwargs):
         except Exception:
             return template
     return template
+
+
+def translate_text(language_code, text):
+    source_text = str(text or "")
+    canonical = LOCALIZED_TEXT_TO_SOURCE.get(source_text, source_text)
+    options = SOURCE_TEXT_TRANSLATIONS.get(canonical)
+    if not options:
+        return source_text
+    normalized = normalize_language_code(language_code)
+    return options.get(normalized) or options.get(DEFAULT_LANGUAGE) or canonical
+
+
+def _sync_runtime_source_text(current_text, stored_source, previous_language):
+    current = str(current_text or "")
+    if not current and stored_source is None:
+        return current, None
+
+    canonical_current = LOCALIZED_TEXT_TO_SOURCE.get(current, current)
+    source = str(stored_source) if stored_source not in (None, "") else None
+    if source is None:
+        source = canonical_current
+    elif previous_language:
+        expected_previous = translate_text(previous_language, source)
+        if current != expected_previous:
+            source = canonical_current
+    return current, source
+
+
+def _translate_runtime_attr(obj, language_code, previous_language, property_name, getter_name, setter_name):
+    getter = getattr(obj, getter_name, None)
+    setter = getattr(obj, setter_name, None)
+    if not callable(getter) or not callable(setter):
+        return
+
+    try:
+        current_value = getter()
+    except Exception:
+        return
+
+    if current_value is None:
+        return
+
+    current_text, source_text = _sync_runtime_source_text(
+        current_value,
+        obj.property(property_name) if hasattr(obj, "property") else None,
+        previous_language,
+    )
+    if source_text is None:
+        return
+
+    if hasattr(obj, "setProperty"):
+        obj.setProperty(property_name, source_text)
+
+    translated = translate_text(language_code, source_text)
+    if translated != current_text:
+        try:
+            setter(translated)
+        except Exception:
+            pass
+
+
+def _translate_combo_items(combo, language_code, previous_language, item_role):
+    count_getter = getattr(combo, "count", None)
+    item_text = getattr(combo, "itemText", None)
+    item_data = getattr(combo, "itemData", None)
+    set_item_data = getattr(combo, "setItemData", None)
+    set_item_text = getattr(combo, "setItemText", None)
+    if not all(callable(method) for method in (count_getter, item_text, item_data, set_item_data, set_item_text)):
+        return
+
+    try:
+        count = int(count_getter())
+    except Exception:
+        return
+
+    for index in range(count):
+        try:
+            current_text = item_text(index)
+            stored_source = item_data(index, item_role)
+        except Exception:
+            continue
+        current_text, source_text = _sync_runtime_source_text(current_text, stored_source, previous_language)
+        if source_text is None:
+            continue
+        try:
+            set_item_data(index, source_text, item_role)
+            translated = translate_text(language_code, source_text)
+            if translated != current_text:
+                set_item_text(index, translated)
+        except Exception:
+            continue
+
+
+def _translate_tab_titles(tab_widget, language_code, previous_language):
+    count_getter = getattr(tab_widget, "count", None)
+    tab_text = getattr(tab_widget, "tabText", None)
+    set_tab_text = getattr(tab_widget, "setTabText", None)
+    if not all(callable(method) for method in (count_getter, tab_text, set_tab_text)):
+        return
+
+    try:
+        count = int(count_getter())
+    except Exception:
+        return
+
+    stored_sources = list(tab_widget.property("_i18n_source_tab_titles") or [])
+    if len(stored_sources) < count:
+        stored_sources.extend([None] * (count - len(stored_sources)))
+
+    for index in range(count):
+        try:
+            current_text = tab_text(index)
+        except Exception:
+            continue
+        current_text, source_text = _sync_runtime_source_text(current_text, stored_sources[index], previous_language)
+        stored_sources[index] = source_text
+        if source_text is None:
+            continue
+        translated = translate_text(language_code, source_text)
+        if translated != current_text:
+            try:
+                set_tab_text(index, translated)
+            except Exception:
+                pass
+
+    tab_widget.setProperty("_i18n_source_tab_titles", stored_sources)
+
+
+def _translate_table_headers(table, language_code, previous_language, item_role):
+    column_count = getattr(table, "columnCount", None)
+    row_count = getattr(table, "rowCount", None)
+    horizontal_header_item = getattr(table, "horizontalHeaderItem", None)
+    vertical_header_item = getattr(table, "verticalHeaderItem", None)
+    if callable(column_count) and callable(horizontal_header_item):
+        try:
+            total_columns = int(column_count())
+        except Exception:
+            total_columns = 0
+        for index in range(total_columns):
+            item = horizontal_header_item(index)
+            if item is None:
+                continue
+            current_text, source_text = _sync_runtime_source_text(item.text(), item.data(item_role), previous_language)
+            if source_text is None:
+                continue
+            item.setData(item_role, source_text)
+            translated = translate_text(language_code, source_text)
+            if translated != current_text:
+                item.setText(translated)
+    if callable(row_count) and callable(vertical_header_item):
+        try:
+            total_rows = int(row_count())
+        except Exception:
+            total_rows = 0
+        for index in range(total_rows):
+            item = vertical_header_item(index)
+            if item is None:
+                continue
+            current_text, source_text = _sync_runtime_source_text(item.text(), item.data(item_role), previous_language)
+            if source_text is None:
+                continue
+            item.setData(item_role, source_text)
+            translated = translate_text(language_code, source_text)
+            if translated != current_text:
+                item.setText(translated)
+
+
+def apply_runtime_translations(root, language_code, previous_language=None):
+    try:
+        from PySide6.QtCore import QObject, Qt
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import (
+            QAbstractButton,
+            QComboBox,
+            QDockWidget,
+            QGroupBox,
+            QLabel,
+            QMenu,
+            QTabWidget,
+            QTableWidget,
+            QWidget,
+        )
+    except Exception:
+        return
+
+    if root is None:
+        return
+
+    normalized = normalize_language_code(language_code)
+    previous = normalize_language_code(previous_language) if previous_language else None
+    item_role = int(Qt.ItemDataRole.UserRole) + 4096
+
+    objects = [root]
+    find_children = getattr(root, "findChildren", None)
+    if callable(find_children):
+        try:
+            objects.extend(root.findChildren(QObject))
+        except Exception:
+            pass
+
+    seen = set()
+    for obj in objects:
+        marker = id(obj)
+        if marker in seen:
+            continue
+        seen.add(marker)
+
+        if isinstance(obj, (QLabel, QAbstractButton, QAction)):
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_text", "text", "setText")
+
+        if isinstance(obj, (QWidget, QDockWidget)):
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_window_title", "windowTitle", "setWindowTitle")
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_tooltip", "toolTip", "setToolTip")
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_placeholder", "placeholderText", "setPlaceholderText")
+
+        if isinstance(obj, QAction):
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_tooltip", "toolTip", "setToolTip")
+
+        if isinstance(obj, (QMenu, QGroupBox)):
+            _translate_runtime_attr(obj, normalized, previous, "_i18n_source_title", "title", "setTitle")
+
+        if isinstance(obj, QComboBox):
+            _translate_combo_items(obj, normalized, previous, item_role)
+
+        if isinstance(obj, QTabWidget):
+            _translate_tab_titles(obj, normalized, previous)
+
+        if isinstance(obj, QTableWidget):
+            _translate_table_headers(obj, normalized, previous, item_role)

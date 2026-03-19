@@ -73,3 +73,119 @@ def test_chart_background_context_flags_slow_printing_rejection_and_resistance_p
     assert "Resistance pressure" in background_text
     assert "Small candles with long wicks" in details_html
     assert "Repeated failures at one level" in details_html
+
+
+def test_chart_layout_prioritizes_price_pane_and_zoom_controls_reduce_visible_span():
+    _app()
+    widget = ChartWidget("BTC/USDT", "1h", _controller())
+    frame = pd.DataFrame(
+        {
+            "timestamp": [1700000000 + (index * 3600) for index in range(18)],
+            "open": [100.0 + index for index in range(18)],
+            "high": [101.4 + index for index in range(18)],
+            "low": [99.2 + index for index in range(18)],
+            "close": [100.8 + index for index in range(18)],
+            "volume": [1000.0 + (index * 40.0) for index in range(18)],
+        }
+    )
+
+    widget.update_candles(frame)
+    initial_x_range, _ = widget.price_plot.viewRange()
+    initial_span = float(initial_x_range[1]) - float(initial_x_range[0])
+
+    widget._zoom_chart(0.72)
+    zoomed_x_range, _ = widget.price_plot.viewRange()
+    zoomed_span = float(zoomed_x_range[1]) - float(zoomed_x_range[0])
+
+    widget._set_chart_overlays_visible(False)
+
+    assert widget.price_plot.minimumHeight() >= 460
+    assert widget.volume_plot.maximumHeight() <= 150
+    assert widget.splitter.count() == 2
+    assert widget.overlay_context_item.isVisible() is False
+    assert zoomed_span < initial_span
+
+
+def test_chart_top_left_overlays_stack_compactly_like_a_single_info_block():
+    _app()
+    widget = ChartWidget("BTC/USDT", "1h", _controller())
+    frame = pd.DataFrame(
+        {
+            "timestamp": [1700000000 + (index * 3600) for index in range(18)],
+            "open": [100.0 + index for index in range(18)],
+            "high": [101.4 + index for index in range(18)],
+            "low": [99.2 + index for index in range(18)],
+            "close": [100.8 + index for index in range(18)],
+            "volume": [1000.0 + (index * 40.0) for index in range(18)],
+        }
+    )
+
+    widget.update_candles(frame)
+
+    header_pos = widget.overlay_header_item.pos()
+    context_pos = widget.overlay_context_item.pos()
+    ohlcv_pos = widget.overlay_ohlcv_item.pos()
+    _, y_range = widget.price_plot.viewRange()
+    y_span = float(y_range[1]) - float(y_range[0])
+
+    assert widget.overlay_header_item.isVisible() is True
+    assert widget.overlay_context_item.isVisible() is True
+    assert widget.overlay_ohlcv_item.isVisible() is True
+    assert abs(float(header_pos.x()) - float(context_pos.x())) < 1e-6
+    assert abs(float(header_pos.x()) - float(ohlcv_pos.x())) < 1e-6
+    assert float(header_pos.y()) > float(context_pos.y()) > float(ohlcv_pos.y())
+    assert (float(header_pos.y()) - float(context_pos.y())) < (y_span * 0.10)
+    assert (float(context_pos.y()) - float(ohlcv_pos.y())) < (y_span * 0.10)
+
+
+def test_chart_volume_bar_is_optional_and_can_be_restored_from_the_chart_menu_state():
+    _app()
+    widget = ChartWidget("BTC/USDT", "1h", _controller())
+
+    assert widget.show_volume_panel is False
+    assert widget.volume_plot.isHidden() is True
+    assert widget.price_plot.getPlotItem().getAxis("bottom").isVisible() is True
+
+    widget.set_volume_panel_visible(True)
+
+    assert widget.show_volume_panel is True
+    assert widget.volume_plot.isHidden() is False
+    assert widget.volume_plot.getPlotItem().getAxis("bottom").isVisible() is True
+
+
+def test_chart_indicators_can_be_removed_from_price_and_lower_panes():
+    _app()
+    widget = ChartWidget("BTC/USDT", "1h", _controller())
+
+    ema_key = widget.add_indicator("EMA", 14)
+    rsi_key = widget.add_indicator("RSI", 14)
+
+    assert ema_key in widget.indicator_items
+    assert rsi_key in widget.indicator_items
+    assert rsi_key in widget.indicator_panes
+    assert widget.splitter.count() == 3
+
+    assert widget.remove_indicator(ema_key) is True
+    assert ema_key not in widget.indicator_items
+    assert all(spec["key"] != ema_key for spec in widget.indicators)
+
+    assert widget.remove_indicator(rsi_key) is True
+    assert rsi_key not in widget.indicator_items
+    assert rsi_key not in widget.indicator_panes
+    assert all(spec["key"] != rsi_key for spec in widget.indicators)
+    assert widget.splitter.count() == 2
+
+
+def test_chart_compact_view_mode_prioritizes_candles_and_keeps_datetime_axis_visible():
+    _app()
+    widget = ChartWidget("BTC/USDT", "1h", _controller())
+
+    widget.set_compact_view_mode(True)
+
+    assert widget.compact_view_mode is True
+    assert widget.default_visible_bars == 60
+    assert widget.info_bar.isHidden() is True
+    assert widget.market_tabs.tabBar().isHidden() is True
+    assert widget.price_plot.minimumHeight() == 280
+    assert widget.volume_plot.maximumHeight() == 96
+    assert widget.price_plot.getPlotItem().getAxis("bottom").isVisible() is True

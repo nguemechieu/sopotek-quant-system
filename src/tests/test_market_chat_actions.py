@@ -273,6 +273,128 @@ def test_submit_market_chat_trade_passes_stop_limit_trigger_to_broker():
     assert order["amount_units"] == 1.5
 
 
+def test_submit_market_chat_trade_caps_buy_size_to_available_quote_balance():
+    controller = _make_controller()
+    submitted = {}
+
+    async def fake_fetch_balance():
+        return {"free": {"USDT": 100.0}}
+
+    async def fake_create_order(**kwargs):
+        submitted.update(kwargs)
+        return {"status": "submitted", "id": "spot-cap-001", "amount": kwargs["amount"]}
+
+    controller.broker = SimpleNamespace(
+        exchange_name="paper",
+        create_order=fake_create_order,
+        fetch_balance=fake_fetch_balance,
+    )
+
+    order = asyncio.run(
+        controller.submit_market_chat_trade(
+            symbol="BTC/USDT",
+            side="buy",
+            amount=2.0,
+        )
+    )
+
+    expected_amount = 100.0 * controller.ORDER_SIZE_BUFFER / 105.1
+    assert abs(submitted["amount"] - expected_amount) < 1e-9
+    assert order["size_adjusted"] is True
+    assert abs(float(order["amount_units"]) - expected_amount) < 1e-9
+
+
+def test_submit_market_chat_trade_applies_smaller_openai_size_recommendation():
+    controller = _make_controller()
+    submitted = {}
+
+    async def fake_create_order(**kwargs):
+        submitted.update(kwargs)
+        return {"status": "submitted", "id": "ai-size-001", "amount": kwargs["amount"]}
+
+    async def fake_recommend_trade_size_with_openai(**_kwargs):
+        return {"recommended_units": 0.4, "reason": "Reduce size for this symbol volatility."}
+
+    controller.broker = SimpleNamespace(exchange_name="paper", create_order=fake_create_order)
+    controller._recommend_trade_size_with_openai = fake_recommend_trade_size_with_openai
+
+    order = asyncio.run(
+        controller.submit_market_chat_trade(
+            symbol="BTC/USDT",
+            side="buy",
+            amount=1.0,
+        )
+    )
+
+    assert submitted["amount"] == 0.4
+    assert order["ai_adjusted"] is True
+    assert order["size_adjusted"] is True
+    assert order["applied_requested_mode_amount"] == 0.4
+
+
+def test_handle_market_chat_action_surfaces_chatgpt_size_note():
+    controller = _make_controller()
+
+    async def fake_submit_market_chat_trade(**_kwargs):
+        return {
+            "status": "submitted",
+            "order_id": "ai-size-note-001",
+            "requested_quantity_mode": "units",
+            "requested_amount": 1.0,
+            "applied_requested_mode_amount": 0.4,
+            "size_adjusted": True,
+            "sizing_summary": "Preflight reduced the order size.",
+            "ai_sizing_reason": "Reduce size for this symbol volatility.",
+        }
+
+    controller.submit_market_chat_trade = fake_submit_market_chat_trade
+
+    reply = asyncio.run(
+        controller.handle_market_chat_action(
+            "trade buy btc/usdt amount 1 confirm"
+        )
+    )
+
+    assert "Amount: 0.4 units" in reply
+    assert "Requested Amount: 1.0 units" in reply
+    assert "ChatGPT Size Note: Reduce size for this symbol volatility." in reply
+
+
+def test_submit_market_chat_trade_blocks_when_margin_closeout_guard_trips():
+    controller = _make_controller()
+    controller.margin_closeout_guard_enabled = True
+    controller.max_margin_closeout_pct = 0.50
+
+    async def fake_fetch_balance():
+        return {
+            "equity": 1000.0,
+            "used": {"USD": 620.0},
+            "raw": {"marginCloseoutPercent": "0.62", "NAV": "1000", "marginUsed": "620"},
+        }
+
+    async def fake_create_order(**_kwargs):
+        raise AssertionError("create_order should not run when the closeout guard blocks the trade")
+
+    controller.broker = SimpleNamespace(
+        exchange_name="oanda",
+        create_order=fake_create_order,
+        fetch_balance=fake_fetch_balance,
+    )
+
+    try:
+        asyncio.run(
+            controller.submit_market_chat_trade(
+                symbol="EUR/USD",
+                side="buy",
+                amount=1000.0,
+            )
+        )
+    except RuntimeError as exc:
+        assert "blocked" in str(exc).lower()
+    else:
+        raise AssertionError("Expected margin closeout guard to block the trade")
+
+
 def test_handle_market_chat_action_can_open_trade_from_pilot_in_lots():
     controller = _make_controller()
     controller.broker = SimpleNamespace(exchange_name="oanda")
@@ -346,6 +468,43 @@ def test_close_market_chat_position_rejects_ambiguous_hedge_symbol_without_side(
         assert "multiple hedge legs" in str(exc).lower()
     else:
         raise AssertionError("Expected ambiguous hedge close to raise RuntimeError")
+
+
+def test_close_market_chat_position_treats_selected_position_amount_as_units():
+    controller = _make_controller()
+    captured = {}
+
+    async def fake_close_position(symbol, amount=None, order_type="market", position=None, position_side=None, position_id=None):
+        captured["symbol"] = symbol
+        captured["amount"] = amount
+        captured["position"] = position
+        captured["position_side"] = position_side
+        captured["position_id"] = position_id
+        return {"status": "submitted", "id": "close-raw-units"}
+
+    controller.broker = SimpleNamespace(exchange_name="oanda", close_position=fake_close_position)
+    position = {
+        "symbol": "USD_HUF",
+        "position_id": "USD_HUF:long",
+        "position_side": "long",
+        "amount": 1250.0,
+        "side": "long",
+    }
+    controller._market_chat_positions_snapshot = lambda: [position]
+
+    result = asyncio.run(
+        controller.close_market_chat_position(
+            "USD_HUF",
+            amount=1250.0,
+            position=position,
+        )
+    )
+
+    assert result["status"] == "submitted"
+    assert captured["symbol"] == "USD_HUF"
+    assert captured["amount"] == 1250.0
+    assert captured["position_side"] == "long"
+    assert captured["position_id"] == "usd_huf:long"
 
 
 def test_handle_market_chat_action_can_summarize_recent_bug_logs():

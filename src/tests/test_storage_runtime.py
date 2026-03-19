@@ -149,6 +149,32 @@ def test_market_data_repository_round_trips_candles():
     assert candles[0][1:6] == [100.0, 101.0, 99.5, 100.5, 10.0]
 
 
+def test_market_data_repository_filters_candles_by_date_range():
+    repo = MarketDataRepository()
+
+    repo.save_candles(
+        "EUR/USD",
+        "1d",
+        [
+            ["2026-03-10T00:00:00+00:00", 1.0, 1.1, 0.9, 1.05, 10.0],
+            ["2026-03-11T00:00:00+00:00", 1.1, 1.2, 1.0, 1.15, 11.0],
+            ["2026-03-12T00:00:00+00:00", 1.2, 1.3, 1.1, 1.25, 12.0],
+        ],
+        exchange="oanda:bid",
+    )
+
+    candles = repo.get_candles(
+        "EUR/USD",
+        timeframe="1d",
+        limit=10,
+        exchange="oanda:bid",
+        start_time="2026-03-11",
+        end_time="2026-03-12",
+    )
+
+    assert [row[0][:10] for row in candles] == ["2026-03-11", "2026-03-12"]
+
+
 def test_execution_manager_persists_trade_history():
     broker = MockBroker()
     bus = EventBus()

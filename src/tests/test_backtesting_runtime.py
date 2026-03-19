@@ -264,8 +264,16 @@ def test_prepare_backtest_context_fetches_exchange_history_when_cache_range_is_t
         _resolve_history_limit=lambda limit=None: int(limit or 1000),
     )
 
-    async def request_candle_data(symbol, timeframe="1h", limit=None):
-        fetch_calls.append({"symbol": symbol, "timeframe": timeframe, "limit": limit})
+    async def request_candle_data(symbol, timeframe="1h", limit=None, start_time=None, end_time=None):
+        fetch_calls.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "limit": limit,
+                "start_time": start_time,
+                "end_time": end_time,
+            }
+        )
         controller.candle_buffers[symbol][timeframe] = full_frame
 
     controller.request_candle_data = request_candle_data
@@ -293,6 +301,8 @@ def test_prepare_backtest_context_fetches_exchange_history_when_cache_range_is_t
     assert fetch_calls
     assert fetch_calls[0]["symbol"] == symbol
     assert fetch_calls[0]["timeframe"] == timeframe
+    assert fetch_calls[0]["start_time"] == "2026-03-10T00:00:00+00:00"
+    assert fetch_calls[0]["end_time"] == "2026-03-13T23:59:59.999999+00:00"
     assert len(context["data"]) == 4
     assert str(context["start_date"]) == "2026-03-10"
     assert str(context["end_date"]) == "2026-03-13"

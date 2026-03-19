@@ -339,6 +339,29 @@ class ExecutionManager:
             "consensus_status": execution.get("consensus_status") or submitted_order.get("consensus_status"),
             "adaptive_weight": execution.get("adaptive_weight", submitted_order.get("adaptive_weight")),
             "adaptive_score": execution.get("adaptive_score", submitted_order.get("adaptive_score")),
+            "requested_amount": execution.get("requested_amount", submitted_order.get("requested_amount")),
+            "requested_quantity_mode": execution.get(
+                "requested_quantity_mode",
+                submitted_order.get("requested_quantity_mode"),
+            ),
+            "requested_amount_units": execution.get(
+                "requested_amount_units",
+                submitted_order.get("requested_amount_units"),
+            ),
+            "deterministic_amount_units": execution.get(
+                "deterministic_amount_units",
+                submitted_order.get("deterministic_amount_units"),
+            ),
+            "amount_units": execution.get("amount_units", submitted_order.get("amount_units")),
+            "applied_requested_mode_amount": execution.get(
+                "applied_requested_mode_amount",
+                submitted_order.get("applied_requested_mode_amount"),
+            ),
+            "size_adjusted": bool(execution.get("size_adjusted", submitted_order.get("size_adjusted", False))),
+            "ai_adjusted": bool(execution.get("ai_adjusted", submitted_order.get("ai_adjusted", False))),
+            "sizing_summary": execution.get("sizing_summary") or submitted_order.get("sizing_summary"),
+            "sizing_notes": execution.get("sizing_notes") or submitted_order.get("sizing_notes"),
+            "ai_sizing_reason": execution.get("ai_sizing_reason") or submitted_order.get("ai_sizing_reason"),
         }
 
     def _payload_fingerprint(self, payload):
@@ -664,6 +687,17 @@ class ExecutionManager:
             "consensus_status",
             "adaptive_weight",
             "adaptive_score",
+            "requested_amount",
+            "requested_quantity_mode",
+            "requested_amount_units",
+            "deterministic_amount_units",
+            "amount_units",
+            "applied_requested_mode_amount",
+            "size_adjusted",
+            "ai_adjusted",
+            "sizing_summary",
+            "sizing_notes",
+            "ai_sizing_reason",
         ):
             if order.get(extra_key) is not None:
                 normalized_order[extra_key] = order.get(extra_key)

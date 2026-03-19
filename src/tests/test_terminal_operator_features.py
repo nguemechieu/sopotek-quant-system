@@ -85,19 +85,27 @@ def test_create_menu_bar_adds_workspace_notifications_palette_and_favorite_actio
     Terminal._create_menu_bar(terminal)
 
     workspace_actions = terminal.workspace_menu.actions()
+    strategy_actions = terminal.strategy_menu.actions()
     assert terminal.action_workspace_trading in workspace_actions
     assert terminal.action_workspace_research in workspace_actions
     assert terminal.action_workspace_risk in workspace_actions
     assert terminal.action_workspace_review in workspace_actions
     assert terminal.action_save_workspace_layout in workspace_actions
     assert terminal.action_restore_workspace_layout in workspace_actions
+    assert terminal.action_strategy_optimization in strategy_actions
+    assert terminal.action_strategy_assigner in strategy_actions
+    assert terminal.action_strategy_scorecard in strategy_actions
+    assert terminal.action_strategy_debug in strategy_actions
     assert terminal.action_notifications in terminal.review_menu.actions()
     assert terminal.action_notifications in terminal.tools_menu.actions()
     assert terminal.action_agent_timeline in terminal.review_menu.actions()
     assert terminal.action_agent_timeline in terminal.research_menu.actions()
     assert terminal.action_agent_timeline in terminal.tools_menu.actions()
     assert terminal.action_command_palette in terminal.tools_menu.actions()
+    assert terminal.action_system_console in terminal.tools_menu.actions()
+    assert terminal.action_system_status in terminal.tools_menu.actions()
     assert terminal.action_favorite_symbol in terminal.charts_menu.actions()
+    assert terminal.action_remove_indicator in terminal.charts_menu.actions()
 
 
 def test_push_notification_dedupes_repeated_messages():
@@ -180,8 +188,8 @@ def test_apply_workspace_preset_toggles_docks_and_opens_matching_tools():
     assert not fake.positions_dock.isHidden()
     assert not fake.orderbook_dock.isHidden()
     assert not fake.risk_heatmap_dock.isHidden()
-    assert not fake.system_status_dock.isHidden()
-    assert not fake.system_console_dock.isHidden()
+    assert fake.system_status_dock.isHidden()
+    assert fake.system_console_dock.isHidden()
     assert opened == ["portfolio_exposure", "position_analysis"]
 
 

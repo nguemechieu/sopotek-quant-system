@@ -111,12 +111,20 @@ class SymbolWorker:
                     )
 
                 if signal:
-                    await self.execution_manager.execute(
-                        symbol=self.symbol,
-                        side=signal["side"],
-                        amount=signal["amount"],
-                        price=signal.get("price")
-                    )
+                    trading_system = getattr(self.controller, "trading_system", None) if self.controller is not None else None
+                    process_signal = getattr(trading_system, "process_signal", None)
+                    if callable(process_signal):
+                        try:
+                            await process_signal(self.symbol, signal, timeframe=self.timeframe)
+                        except TypeError:
+                            await process_signal(self.symbol, signal)
+                    else:
+                        await self.execution_manager.execute(
+                            symbol=self.symbol,
+                            side=signal["side"],
+                            amount=signal["amount"],
+                            price=signal.get("price")
+                        )
 
                 await asyncio.sleep(self.poll_interval)
 

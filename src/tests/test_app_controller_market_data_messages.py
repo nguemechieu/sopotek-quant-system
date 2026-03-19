@@ -164,6 +164,26 @@ def test_performance_history_persists_timestamp_payload():
     ]
 
 
+def test_set_forex_candle_price_component_updates_live_oanda_preferences():
+    controller = AppController.__new__(AppController)
+    controller.settings = _SettingsRecorder()
+    controller.forex_candle_price_component = "mid"
+    controller.config = SimpleNamespace(broker=SimpleNamespace(options={"market_type": "auto"}))
+    observed = []
+    controller.broker = SimpleNamespace(
+        exchange_name="oanda",
+        set_candle_price_component=lambda value: observed.append(value),
+    )
+
+    normalized = controller.set_forex_candle_price_component("Bid")
+
+    assert normalized == "bid"
+    assert controller.forex_candle_price_component == "bid"
+    assert controller.settings._values["market_data/forex_candle_price_component"] == "bid"
+    assert controller.config.broker.options["candle_price_component"] == "bid"
+    assert observed == ["bid"]
+
+
 
 def test_request_candle_data_does_not_warn_when_only_one_bar_is_missing():
     candles = [

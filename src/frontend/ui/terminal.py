@@ -75,7 +75,7 @@ from frontend.ui.actions.window_actions import (
     open_text_window,
     sync_logs_window,
 )
-from frontend.ui.i18n import iter_supported_languages
+from frontend.ui.i18n import apply_runtime_translations, iter_supported_languages
 from frontend.ui.panels.system_panels import (
     AI_MONITOR_HEADERS,
     create_ai_signal_panel,
@@ -215,6 +215,21 @@ def _json_text(value: object, fallback: str) -> str:
     return fallback
 
 
+def _setting_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _coerce_float(value: Any) -> float | None:
     try:
         return float(value)
@@ -287,6 +302,7 @@ class Terminal(QMainWindow):
 
         self.training_status = {}
         self.show_bid_ask_lines = True
+        self.show_chart_volume = _setting_bool(self.settings.value("terminal/show_chart_volume", False), False)
         self._ui_shutting_down = False
         self._positions_refresh_task = None
         self._open_orders_refresh_task = None
@@ -377,6 +393,7 @@ class Terminal(QMainWindow):
         self.kill_switch_button = None
         self.symbol_picker = None
         self.detached_tool_windows: dict[str, Any] = {}
+        self._active_chart_widget_ref = None
         self._last_chart_request_key = None
         self.current_connection_status = "connecting"
         self.language_actions = {}
@@ -800,6 +817,192 @@ class Terminal(QMainWindow):
         except Exception:
             return []
 
+    def _is_multi_chart_page(self, page):
+        if page is None:
+            return False
+        try:
+            return str(page.objectName() or "") == "multi_chart_page"
+        except Exception:
+            return False
+
+    def _normalized_chart_symbols(self, symbols, max_count=4):
+        normalized = []
+        for symbol in symbols or []:
+            value = str(symbol or "").strip().upper()
+            if not value or value in normalized:
+                continue
+            normalized.append(value)
+            if len(normalized) >= max_count:
+                break
+        return normalized
+
+    def _multi_chart_symbols(self, max_count=4):
+        candidates = []
+
+        current_symbol = self._current_chart_symbol() or getattr(self, "symbol", "")
+        if current_symbol:
+            candidates.append(current_symbol)
+
+        for chart in self._all_chart_widgets():
+            candidates.append(getattr(chart, "symbol", ""))
+
+        for symbol in sorted(getattr(self, "autotrade_watchlist", set()) or set()):
+            candidates.append(symbol)
+
+        for symbol in getattr(self.controller, "symbols", []) or []:
+            candidates.append(symbol)
+
+        return self._normalized_chart_symbols(candidates, max_count=max_count)
+
+    def _multi_chart_window_key(self, symbols, timeframe):
+        safe_symbols = "_".join(
+            symbol.replace("/", "_").replace(":", "_")
+            for symbol in self._normalized_chart_symbols(symbols, max_count=4)
+        )
+        safe_timeframe = str(timeframe or self.current_timeframe or "1h").strip().lower().replace("/", "_")
+        return f"multi_chart_{safe_timeframe}_{safe_symbols or 'group'}"
+
+    def _find_multi_chart_tab(self, symbols, timeframe):
+        if not self._chart_tabs_ready():
+            return -1
+
+        target_symbols = self._normalized_chart_symbols(symbols, max_count=4)
+        target_timeframe = str(timeframe or self.current_timeframe or "1h").strip().lower() or "1h"
+        if not target_symbols:
+            return -1
+
+        try:
+            count = self.chart_tabs.count()
+        except RuntimeError:
+            return -1
+
+        for index in range(count):
+            try:
+                page = self.chart_tabs.widget(index)
+            except RuntimeError:
+                break
+            if not self._is_multi_chart_page(page):
+                continue
+            page_symbols = self._normalized_chart_symbols(
+                getattr(page, "_multi_chart_symbols", None)
+                or [getattr(chart, "symbol", "") for chart in self._chart_widgets_in_page(page)],
+                max_count=4,
+            )
+            page_timeframe = str(
+                getattr(page, "_multi_chart_timeframe", None)
+                or target_timeframe
+            ).strip().lower() or target_timeframe
+            if page_symbols == target_symbols and page_timeframe == target_timeframe:
+                return index
+        return -1
+
+    def _build_multi_chart_page(self, symbols, timeframe):
+        normalized_symbols = self._normalized_chart_symbols(symbols, max_count=4)
+        if not normalized_symbols:
+            return None
+
+        normalized_tf = str(timeframe or self.current_timeframe or "1h").strip().lower() or "1h"
+        page = QWidget()
+        page.setObjectName("multi_chart_page")
+        page._detach_window_key = self._multi_chart_window_key(normalized_symbols, normalized_tf)
+        page._multi_chart_symbols = list(normalized_symbols)
+        page._multi_chart_timeframe = normalized_tf
+
+        layout = QGridLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(8)
+
+        column_count = 1 if len(normalized_symbols) == 1 else 2
+        row_count = int(np.ceil(len(normalized_symbols) / column_count))
+        for row in range(row_count):
+            layout.setRowStretch(row, 1)
+        for column in range(column_count):
+            layout.setColumnStretch(column, 1)
+
+        for index, symbol in enumerate(normalized_symbols):
+            chart = ChartWidget(
+                symbol,
+                normalized_tf,
+                self.controller,
+                candle_up_color=self.candle_up_color,
+                candle_down_color=self.candle_down_color,
+                show_volume_panel=getattr(self, "show_chart_volume", False),
+            )
+            self._configure_chart_widget(chart)
+            chart.setMinimumHeight(300)
+            row = index // column_count
+            column = index % column_count
+            layout.addWidget(chart, row, column)
+
+        return page
+
+    def _close_multi_chart_pages(self):
+        if self._chart_tabs_ready():
+            for index in reversed(range(self.chart_tabs.count())):
+                page = self.chart_tabs.widget(index)
+                if self._is_multi_chart_page(page):
+                    self._close_chart_tab(index)
+
+        for key, window in list((getattr(self, "detached_tool_windows", {}) or {}).items()):
+            if not self._is_qt_object_alive(window):
+                self.detached_tool_windows.pop(key, None)
+                continue
+            if not getattr(window, "_contains_chart_page", False):
+                continue
+            page = getattr(window, "centralWidget", lambda: None)()
+            if not self._is_multi_chart_page(page):
+                continue
+            self.detached_tool_windows.pop(key, None)
+            window._contains_chart_page = False
+            try:
+                window.close()
+            except Exception:
+                pass
+            try:
+                window.deleteLater()
+            except Exception:
+                pass
+
+    def _set_active_chart_widget(self, chart, refresh_orderbook=False):
+        if not isinstance(chart, ChartWidget) or not self._is_qt_object_alive(chart):
+            return
+
+        self._active_chart_widget_ref = chart
+        self.current_timeframe = str(getattr(chart, "timeframe", self.current_timeframe) or self.current_timeframe)
+        self.controller.time_frame = self.current_timeframe
+        self.settings.setValue("terminal/current_timeframe", self.current_timeframe)
+        self._set_active_timeframe_button(self.current_timeframe)
+
+        symbol = str(getattr(chart, "symbol", "") or "").strip().upper()
+        if symbol and self.symbol_picker is not None:
+            self.symbol_picker.setCurrentText(symbol)
+
+        page = self._chart_page_for_widget(chart)
+        if page is not None and self._chart_tabs_ready():
+            try:
+                index = self.chart_tabs.indexOf(page)
+            except RuntimeError:
+                index = -1
+            if index >= 0 and self.chart_tabs.currentIndex() != index:
+                self.chart_tabs.setCurrentIndex(index)
+
+        self._last_chart_request_key = (symbol, self.current_timeframe)
+        if refresh_orderbook:
+            self._request_active_orderbook()
+
+    def _preferred_chart_in_page(self, page):
+        charts = self._chart_widgets_in_page(page)
+        if not charts:
+            return None
+
+        active_chart = getattr(self, "_active_chart_widget_ref", None)
+        if isinstance(active_chart, ChartWidget) and self._is_qt_object_alive(active_chart):
+            for chart in charts:
+                if chart is active_chart:
+                    return chart
+        return charts[0]
+
     def _chart_page_for_widget(self, target_chart):
         if target_chart is None:
             return None
@@ -901,21 +1104,24 @@ class Terminal(QMainWindow):
     def _detached_chart_layouts(self):
         layouts = []
         for window in self._detached_chart_windows():
-            charts = self._chart_widgets_in_page(getattr(window, "centralWidget", lambda: None)())
+            page = getattr(window, "centralWidget", lambda: None)()
+            charts = self._chart_widgets_in_page(page)
             if not charts:
                 continue
-            chart = charts[0]
             geometry = window.geometry()
-            layouts.append(
-                {
-                    "symbol": str(chart.symbol),
-                    "timeframe": str(chart.timeframe),
-                    "x": int(geometry.x()),
-                    "y": int(geometry.y()),
-                    "width": int(geometry.width()),
-                    "height": int(geometry.height()),
-                }
-            )
+            layout = {
+                "timeframe": str(getattr(charts[0], "timeframe", self.current_timeframe)),
+                "x": int(geometry.x()),
+                "y": int(geometry.y()),
+                "width": int(geometry.width()),
+                "height": int(geometry.height()),
+            }
+            if len(charts) > 1 or self._is_multi_chart_page(page):
+                layout["kind"] = "group"
+                layout["symbols"] = [str(chart.symbol) for chart in charts]
+            else:
+                layout["symbol"] = str(charts[0].symbol)
+            layouts.append(layout)
         return layouts
 
     def _save_detached_chart_layouts(self):
@@ -937,10 +1143,11 @@ class Terminal(QMainWindow):
         for entry in layouts:
             if not isinstance(entry, dict):
                 continue
-            symbol = str(entry.get("symbol") or "").strip().upper()
             timeframe = str(entry.get("timeframe") or "").strip() or self.current_timeframe
+            symbols = self._normalized_chart_symbols(entry.get("symbols") or [], max_count=4)
+            symbol = str(entry.get("symbol") or "").strip().upper()
             if not symbol:
-                continue
+                symbol = symbols[0] if symbols else ""
             try:
                 x = int(entry.get("x", 0))
                 y = int(entry.get("y", 0))
@@ -948,7 +1155,11 @@ class Terminal(QMainWindow):
                 height = max(260, int(entry.get("height", 780)))
             except Exception:
                 x, y, width, height = 0, 0, 1200, 780
-            self._open_or_focus_detached_chart(symbol, timeframe, geometry=QRect(x, y, width, height))
+            geometry = QRect(x, y, width, height)
+            if str(entry.get("kind") or "").strip().lower() == "group" and symbols:
+                self._open_or_focus_detached_chart_group(symbols, timeframe, geometry=geometry)
+            elif symbol:
+                self._open_or_focus_detached_chart(symbol, timeframe, geometry=geometry)
 
     def _reattach_chart_window(self, window):
         if window is None or not self._is_qt_object_alive(window):
@@ -964,7 +1175,10 @@ class Terminal(QMainWindow):
         page.setParent(None)
         self.chart_tabs.addTab(page, title)
         self.chart_tabs.setCurrentWidget(page)
-        for chart in self._chart_widgets_in_page(page):
+        charts = self._chart_widgets_in_page(page)
+        if charts:
+            self._set_active_chart_widget(charts[0])
+        for chart in charts:
             self._schedule_chart_data_refresh(chart)
         self._request_active_orderbook()
         window._contains_chart_page = False
@@ -992,6 +1206,23 @@ class Terminal(QMainWindow):
         return charts
 
     def _current_chart_widget(self):
+        active_chart = getattr(self, "_active_chart_widget_ref", None)
+        if isinstance(active_chart, ChartWidget) and self._is_qt_object_alive(active_chart):
+            page = self._chart_page_for_widget(active_chart)
+            if page is not None:
+                active_window = QApplication.activeWindow()
+                if active_window is not None and active_window is not self:
+                    active_page = getattr(active_window, "centralWidget", lambda: None)()
+                    if active_page is page or active_chart in self._chart_widgets_in_page(active_page):
+                        return active_chart
+                if self._chart_tabs_ready():
+                    try:
+                        current_page = self.chart_tabs.currentWidget()
+                    except RuntimeError:
+                        current_page = None
+                    if current_page is page or active_chart in self._chart_widgets_in_page(current_page):
+                        return active_chart
+
         active_window = QApplication.activeWindow()
         if active_window is not None and active_window is not self:
             charts = self._chart_widgets_in_page(getattr(active_window, "centralWidget", lambda: None)())
@@ -1379,6 +1610,8 @@ class Terminal(QMainWindow):
         self.action_optimize_strategy.setShortcut("Ctrl+Shift+O")
         self.backtest_menu.addAction(self.action_optimize_strategy)
 
+        self.strategy_menu = menu_bar.addMenu("")
+
         self.charts_menu = menu_bar.addMenu("")
         self.action_new_chart = QAction(self)
         self.action_new_chart.setShortcut("Ctrl+N")
@@ -1413,11 +1646,19 @@ class Terminal(QMainWindow):
         self.action_add_indicator = QAction(self)
         self.action_add_indicator.triggered.connect(self._add_indicator_to_current_chart)
         self.charts_menu.addAction(self.action_add_indicator)
+        self.action_remove_indicator = QAction(self)
+        self.action_remove_indicator.triggered.connect(self._remove_indicator_from_current_chart)
+        self.charts_menu.addAction(self.action_remove_indicator)
         self.toggle_bid_ask_lines_action = QAction(self)
         self.toggle_bid_ask_lines_action.setCheckable(True)
         self.toggle_bid_ask_lines_action.setChecked(self.show_bid_ask_lines)
         self.toggle_bid_ask_lines_action.triggered.connect(self._toggle_bid_ask_lines)
         self.charts_menu.addAction(self.toggle_bid_ask_lines_action)
+        self.toggle_volume_bar_action = QAction(self)
+        self.toggle_volume_bar_action.setCheckable(True)
+        self.toggle_volume_bar_action.setChecked(getattr(self, "show_chart_volume", False))
+        self.toggle_volume_bar_action.triggered.connect(self._toggle_chart_volume)
+        self.charts_menu.addAction(self.toggle_volume_bar_action)
 
         self.data_menu = menu_bar.addMenu("")
         self.action_refresh_markets = QAction(self)
@@ -1485,8 +1726,22 @@ class Terminal(QMainWindow):
         self.action_strategy_optimization.triggered.connect(self._optimize_strategy)
         self.action_strategy_assigner = QAction("Strategy Assigner", self)
         self.action_strategy_assigner.triggered.connect(self._open_strategy_assignment_window)
+        self.action_strategy_scorecard = QAction("Strategy Scorecard", self)
+        self.action_strategy_scorecard.triggered.connect(self._open_strategy_scorecard_dock)
+        self.action_strategy_debug = QAction("Strategy Debug", self)
+        self.action_strategy_debug.triggered.connect(self._open_strategy_debug_dock)
+        self.action_system_console = QAction("System Console", self)
+        self.action_system_console.triggered.connect(self._open_system_console_dock)
+        self.action_system_status = QAction("System Status", self)
+        self.action_system_status.triggered.connect(self._open_system_status_dock)
         self.action_stellar_asset_explorer = QAction("Stellar Asset Explorer", self)
         self.action_stellar_asset_explorer.triggered.connect(self._open_stellar_asset_explorer_window)
+
+        self.strategy_menu.addAction(self.action_strategy_optimization)
+        self.strategy_menu.addAction(self.action_strategy_assigner)
+        self.strategy_menu.addSeparator()
+        self.strategy_menu.addAction(self.action_strategy_scorecard)
+        self.strategy_menu.addAction(self.action_strategy_debug)
 
         self.risk_menu = menu_bar.addMenu("")
         self.risk_menu.addAction(self.action_risk_settings)
@@ -1522,6 +1777,8 @@ class Terminal(QMainWindow):
         self.tools_menu.addAction(self.action_recommendations)
         self.tools_menu.addAction(self.action_ml_monitor)
         self.tools_menu.addAction(self.action_logs)
+        self.tools_menu.addAction(self.action_system_console)
+        self.tools_menu.addAction(self.action_system_status)
         self.tools_menu.addAction(self.action_performance)
         self.tools_menu.addAction(self.action_closed_journal)
         self.tools_menu.addAction(self.action_trade_checklist)
@@ -1571,12 +1828,14 @@ class Terminal(QMainWindow):
             )
 
     def apply_language(self):
+        previous_language = getattr(self, "_applied_language_code", None)
         self.setWindowTitle(self._tr("terminal.window_title"))
 
         if hasattr(self, "file_menu"):
             self.file_menu.setTitle(self._tr("terminal.menu.file"))
             self.trading_menu.setTitle(self._tr("terminal.menu.trading"))
             self.backtest_menu.setTitle(self._tr("terminal.menu.backtesting"))
+            self.strategy_menu.setTitle("Strategy")
             self.charts_menu.setTitle(self._tr("terminal.menu.charts"))
             self.data_menu.setTitle(self._tr("terminal.menu.data"))
             self.settings_menu.setTitle(self._tr("terminal.menu.settings"))
@@ -1606,7 +1865,9 @@ class Terminal(QMainWindow):
             self.action_cascade_chart_windows.setText("Cascade Chart Windows")
             self.action_candle_colors.setText(self._tr("terminal.action.candle_colors"))
             self.action_add_indicator.setText(self._tr("terminal.action.add_indicator"))
+            self.action_remove_indicator.setText("Remove Indicator")
             self.toggle_bid_ask_lines_action.setText(self._tr("terminal.action.toggle_bid_ask"))
+            self.toggle_volume_bar_action.setText("Volume Bar")
             self.action_refresh_markets.setText(self._tr("terminal.action.refresh_markets"))
             self.action_refresh_chart.setText(self._tr("terminal.action.refresh_chart"))
             self.action_refresh_orderbook.setText(self._tr("terminal.action.refresh_orderbook"))
@@ -1628,6 +1889,10 @@ class Terminal(QMainWindow):
             self.action_position_analysis.setText("Position Analysis")
             self.action_strategy_optimization.setText("Strategy Optimization")
             self.action_strategy_assigner.setText("Strategy Assigner")
+            self.action_strategy_scorecard.setText("Strategy Scorecard")
+            self.action_strategy_debug.setText("Strategy Debug")
+            self.action_system_console.setText("System Console")
+            self.action_system_status.setText("System Status")
             self.action_stellar_asset_explorer.setText("Stellar Asset Explorer")
             self.action_license.setText("License")
             self.action_documentation.setText(self._tr("terminal.action.documentation"))
@@ -1667,6 +1932,13 @@ class Terminal(QMainWindow):
         }.get(self.current_connection_status, "terminal.status.connecting")
         if getattr(self, "connection_indicator", None) is not None:
             self.connection_indicator.setText(f"* {self._tr(status_key)}")
+
+        apply_runtime_translations(
+            self,
+            getattr(self.controller, "language_code", "en"),
+            previous_language=previous_language,
+        )
+        self._applied_language_code = getattr(self.controller, "language_code", "en")
 
     # ==========================================================
     # TOOLBAR
@@ -1770,13 +2042,6 @@ class Terminal(QMainWindow):
 
         self.connection_indicator.hide()
         utility_layout.addWidget(self.heartbeat)
-
-        self.system_status_button = QPushButton("Status")
-        self.system_status_button.setStyleSheet(self._action_button_style())
-        self.system_status_button.setMinimumWidth(78)
-        self.system_status_button.setToolTip("Show or hide the System Status panel")
-        self.system_status_button.clicked.connect(self._show_system_status_panel)
-        utility_layout.addWidget(self.system_status_button)
 
         self.screenshot_button = QPushButton(self._tr("terminal.toolbar.screenshot"))
         self.screenshot_button.setStyleSheet(self._action_button_style())
@@ -2021,6 +2286,7 @@ class Terminal(QMainWindow):
         self.chart_tabs.addTab(chart, f"{symbol} ({timeframe})")
         chart.link_all_charts(self.chart_tabs.count())
         self.chart_tabs.setCurrentWidget(chart)
+        self._set_active_chart_widget(chart)
         if self.symbol_picker is not None:
             self.symbol_picker.setCurrentText(symbol)
         self._request_active_orderbook()
@@ -2220,7 +2486,7 @@ class Terminal(QMainWindow):
         self._show_chart_page_in_window(page, title, detach_key, width=1320, height=860)
         self._save_detached_chart_layouts()
 
-    def _open_or_focus_detached_chart(self, symbol, timeframe=None, geometry=None):
+    def _open_or_focus_detached_chart(self, symbol, timeframe=None, geometry=None, compact_view=False):
         target_symbol = (symbol or "").strip().upper()
         target_timeframe = timeframe or self.current_timeframe
         if not target_symbol:
@@ -2238,6 +2504,8 @@ class Terminal(QMainWindow):
             if page is None:
                 return existing_window
             for chart in self._chart_widgets_in_page(page):
+                if hasattr(chart, "set_compact_view_mode"):
+                    chart.set_compact_view_mode(compact_view)
                 self._schedule_chart_data_refresh(chart)
             self._save_detached_chart_layouts()
             return existing_window
@@ -2249,6 +2517,9 @@ class Terminal(QMainWindow):
             except RuntimeError:
                 page = None
             if page is not None:
+                for chart in self._chart_widgets_in_page(page):
+                    if hasattr(chart, "set_compact_view_mode"):
+                        chart.set_compact_view_mode(compact_view)
                 self.chart_tabs.removeTab(existing_index)
                 page.setParent(None)
                 return self._show_chart_page_in_window(
@@ -2268,6 +2539,8 @@ class Terminal(QMainWindow):
             candle_down_color=self.candle_down_color,
         )
         self._configure_chart_widget(chart)
+        if hasattr(chart, "set_compact_view_mode"):
+            chart.set_compact_view_mode(compact_view)
         window = self._show_chart_page_in_window(
             chart,
             f"{target_symbol} ({target_timeframe})",
@@ -2277,6 +2550,70 @@ class Terminal(QMainWindow):
             geometry=geometry,
         )
         self._schedule_chart_data_refresh(chart)
+        self._save_detached_chart_layouts()
+        return window
+
+    def _open_or_focus_detached_chart_group(self, symbols, timeframe=None, geometry=None):
+        target_symbols = self._normalized_chart_symbols(symbols, max_count=4)
+        target_timeframe = str(timeframe or self.current_timeframe or "1h").strip().lower() or "1h"
+        if not target_symbols:
+            return None
+
+        detach_key = self._multi_chart_window_key(target_symbols, target_timeframe)
+        existing_window = self.detached_tool_windows.get(detach_key)
+        if self._is_qt_object_alive(existing_window):
+            if geometry is not None:
+                existing_window.setGeometry(geometry)
+            existing_window.showNormal()
+            existing_window.raise_()
+            existing_window.activateWindow()
+            page = existing_window.centralWidget()
+            for chart in self._chart_widgets_in_page(page):
+                self._schedule_chart_data_refresh(chart)
+            preferred_chart = self._preferred_chart_in_page(page)
+            if preferred_chart is not None:
+                self._set_active_chart_widget(preferred_chart)
+            self._save_detached_chart_layouts()
+            return existing_window
+
+        existing_index = self._find_multi_chart_tab(target_symbols, target_timeframe)
+        if existing_index >= 0:
+            try:
+                page = self.chart_tabs.widget(existing_index)
+            except RuntimeError:
+                page = None
+            if page is not None:
+                self.chart_tabs.removeTab(existing_index)
+                page.setParent(None)
+                window = self._show_chart_page_in_window(
+                    page,
+                    self._chart_page_title(page),
+                    detach_key,
+                    width=1320,
+                    height=860,
+                    geometry=geometry,
+                )
+                preferred_chart = self._preferred_chart_in_page(page)
+                if preferred_chart is not None:
+                    self._set_active_chart_widget(preferred_chart)
+                self._save_detached_chart_layouts()
+                return window
+
+        page = self._build_multi_chart_page(target_symbols, target_timeframe)
+        if page is None:
+            return None
+
+        window = self._show_chart_page_in_window(
+            page,
+            self._chart_page_title(page),
+            detach_key,
+            width=1320,
+            height=860,
+            geometry=geometry,
+        )
+        preferred_chart = self._preferred_chart_in_page(page)
+        if preferred_chart is not None:
+            self._set_active_chart_widget(preferred_chart)
         self._save_detached_chart_layouts()
         return window
 
@@ -2292,18 +2629,13 @@ class Terminal(QMainWindow):
         if not charts:
             return
 
-        chart = charts[0]
+        chart = self._preferred_chart_in_page(page)
+        if chart is None:
+            return
 
-        self.current_timeframe = chart.timeframe
-        self.controller.time_frame = chart.timeframe
-        self.settings.setValue("terminal/current_timeframe", chart.timeframe)
-        self._set_active_timeframe_button(chart.timeframe)
+        self._set_active_chart_widget(chart)
         if hasattr(chart, "set_timeframe"):
             chart.set_timeframe(chart.timeframe, emit_signal=False)
-        if self.symbol_picker is not None:
-            self.symbol_picker.setCurrentText(chart.symbol)
-
-        self._last_chart_request_key = (chart.symbol, chart.timeframe)
         for chart_widget in charts:
             self._schedule_chart_data_refresh(chart_widget)
         self._request_active_orderbook()
@@ -2321,11 +2653,13 @@ class Terminal(QMainWindow):
         if not isinstance(chart, ChartWidget):
             return chart
         chart.set_bid_ask_lines_visible(self.show_bid_ask_lines)
+        chart.set_volume_panel_visible(getattr(self, "show_chart_volume", False))
         if not bool(getattr(chart, "_sopotek_trade_signal_hooks_installed", False)):
             chart.sigTradeLevelRequested.connect(self._handle_chart_trade_level_request)
             chart.sigTradeLevelChanged.connect(self._handle_chart_trade_level_changed)
             chart.sigTradeContextAction.connect(self._handle_chart_trade_context_action)
             chart.sigTimeframeSelected.connect(lambda timeframe, chart_ref=chart: self._set_chart_timeframe(chart_ref, timeframe))
+            chart.sigActivated.connect(lambda chart_ref, _chart=chart: self._set_active_chart_widget(_chart, refresh_orderbook=True))
             chart._sopotek_trade_signal_hooks_installed = True
         return chart
 
@@ -2548,6 +2882,14 @@ class Terminal(QMainWindow):
 
         for chart in self._iter_chart_widgets():
             chart.set_bid_ask_lines_visible(self.show_bid_ask_lines)
+
+    def _toggle_chart_volume(self, checked):
+        self.show_chart_volume = bool(checked)
+        for chart in self._iter_chart_widgets():
+            chart.set_volume_panel_visible(self.show_chart_volume)
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            settings.setValue("terminal/show_chart_volume", self.show_chart_volume)
 
     # ==========================================================
     # UPDATE METHODS
@@ -4292,9 +4634,7 @@ class Terminal(QMainWindow):
 
     def _apply_default_dock_layout(self):
         self._safe_tabify_docks(self.positions_dock, self.open_orders_dock)
-        self._safe_tabify_docks(self.positions_dock, self.strategy_scorecard_dock)
         self._safe_tabify_docks(self.trade_log_dock, self.orderbook_dock)
-        self._safe_tabify_docks(self.trade_log_dock, self.strategy_debug_dock)
         self._safe_tabify_docks(self.trade_log_dock, self.risk_heatmap_dock)
         self._safe_tabify_docks(self.trade_log_dock, self.ai_signal_dock)
 
@@ -4307,11 +4647,29 @@ class Terminal(QMainWindow):
 
         try:
             self.resizeDocks([dock for dock in (self.market_watch_dock, self.trade_log_dock) if dock is not None], [320, 420], Qt.Orientation.Horizontal)
-            self.resizeDocks([dock for dock in (self.positions_dock, self.system_console_dock) if dock is not None], [250, 180], Qt.Orientation.Vertical)
+            self.resizeDocks([dock for dock in (self.positions_dock, self.open_orders_dock) if dock is not None], [280, 220], Qt.Orientation.Vertical)
         except Exception:
             pass
 
         self._queue_terminal_layout_fit()
+
+    def _show_workspace_dock(self, dock):
+        if not self._is_qt_object_alive(dock):
+            return
+        dock.show()
+        dock.raise_()
+
+    def _open_strategy_scorecard_dock(self):
+        self._show_workspace_dock(getattr(self, "strategy_scorecard_dock", None))
+
+    def _open_strategy_debug_dock(self):
+        self._show_workspace_dock(getattr(self, "strategy_debug_dock", None))
+
+    def _open_system_console_dock(self):
+        self._show_workspace_dock(getattr(self, "system_console_dock", None))
+
+    def _open_system_status_dock(self):
+        self._show_workspace_dock(getattr(self, "system_status_dock", None))
 
     def _apply_candle_colors_to_all_charts(self):
         for chart in self._iter_chart_widgets():
@@ -4454,6 +4812,115 @@ class Terminal(QMainWindow):
 
         # Force redraw using existing candle cache for this symbol/timeframe.
         asyncio.get_event_loop().create_task(self._reload_chart_data(chart.symbol, chart.timeframe))
+
+    def _chart_indicator_display_name(self, spec):
+        indicator_type = str((spec or {}).get("type") or "").strip().upper()
+        raw_period = (spec or {}).get("period")
+        try:
+            period = int(raw_period) if raw_period is not None else None
+        except (TypeError, ValueError):
+            period = None
+        label_map = {
+            "SMA": "Moving Average",
+            "EMA": "EMA",
+            "SMMA": "SMMA",
+            "LWMA": "LWMA",
+            "VWAP": "VWAP",
+            "BB": "Bollinger Bands",
+            "ENVELOPES": "Envelopes",
+            "ICHIMOKU": "Ichimoku",
+            "SAR": "Parabolic SAR",
+            "STDDEV": "Standard Deviation",
+            "AC": "Accelerator Oscillator",
+            "AO": "Awesome Oscillator",
+            "CCI": "CCI",
+            "DEMARKER": "DeMarker",
+            "MACD": "MACD",
+            "MOMENTUM": "Momentum",
+            "OSMA": "OsMA",
+            "RSI": "RSI",
+            "RVI": "RVI",
+            "STOCHASTIC": "Stochastic Oscillator",
+            "WPR": "Williams' Percent Range",
+            "AD": "Accumulation/Distribution",
+            "MFI": "Money Flow Index",
+            "OBV": "On Balance Volume",
+            "VOLUMES": "Volumes",
+            "ALLIGATOR": "Alligator",
+            "FRACTAL": "Fractal",
+            "GATOR": "Gator Oscillator",
+            "BW_MFI": "Market Facilitation Index",
+            "BULLS POWER": "Bulls Power",
+            "BEARS POWER": "Bears Power",
+            "FORCE INDEX": "Force Index",
+            "DONCHIAN": "Donchian Channel",
+            "KELTNER": "Keltner Channel",
+            "ZIGZAG": "ZigZag",
+            "FIBO": "Fibonacci Retracement",
+            "ADX": "ADX",
+            "ATR": "ATR",
+        }
+        label = label_map.get(indicator_type, indicator_type.title() if indicator_type else "Indicator")
+        singleton_indicators = {
+            "ICHIMOKU",
+            "SAR",
+            "AC",
+            "AO",
+            "MACD",
+            "OSMA",
+            "AD",
+            "OBV",
+            "VOLUMES",
+            "ALLIGATOR",
+            "GATOR",
+            "BW_MFI",
+            "BULLS POWER",
+            "BEARS POWER",
+        }
+        if indicator_type in singleton_indicators or period is None:
+            return label
+        return f"{label} ({period})"
+
+    def _remove_indicator_from_current_chart(self):
+        chart = self._current_chart_widget()
+        if not isinstance(chart, ChartWidget):
+            QMessageBox.warning(self, "Chart", "Select a chart first.")
+            return
+
+        indicator_specs = [
+            spec
+            for spec in list(getattr(chart, "indicators", []) or [])
+            if isinstance(spec, dict) and str(spec.get("key") or "").strip()
+        ]
+        if not indicator_specs:
+            QMessageBox.information(self, "Indicator", "This chart has no indicators to remove.")
+            return
+
+        options = []
+        option_map = {}
+        for spec in indicator_specs:
+            key = str(spec.get("key") or "").strip()
+            option = f"{self._chart_indicator_display_name(spec)} [{key}]"
+            options.append(option)
+            option_map[option] = key
+
+        selection, ok = QInputDialog.getItem(
+            self,
+            "Remove Indicator",
+            "Indicator:",
+            options,
+            0,
+            False,
+        )
+        if not ok or not selection:
+            return
+
+        if not chart.remove_indicator(option_map.get(selection, "")):
+            QMessageBox.warning(self, "Indicator", "Unable to remove the selected indicator.")
+            return
+
+        chart.updateGeometry()
+        chart.repaint()
 
     def _update_orderbook(self, symbol, bids, asks):
         update_orderbook(self, symbol, bids, asks)
@@ -5272,55 +5739,57 @@ class Terminal(QMainWindow):
         take_profit=None,
     ):
         try:
-            trading_system = getattr(self.controller, "trading_system", None)
-            execution_manager = getattr(trading_system, "execution_manager", None)
-            if execution_manager is not None:
-                order = await execution_manager.execute(
-                    symbol=symbol,
-                    side=side,
-                    amount=amount,
-                    type=order_type,
-                    price=price,
-                    stop_price=stop_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    source="manual",
-                    strategy_name="Manual",
-                    reason="Manual order",
-                    confidence=1.0,
-                )
-            else:
-                order = await self.controller.broker.create_order(
-                    symbol=symbol,
-                    side=side,
-                    amount=amount,
-                    type=order_type,
-                    price=price,
-                    stop_price=stop_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                )
-                if isinstance(order, dict):
-                    order.setdefault("source", "manual")
-
-            if not order:
-                self._show_async_message(
-                    "Manual Order",
-                    f"The order for {symbol} was skipped by broker safety checks.",
-                    QMessageBox.Icon.Information,
-                )
-                return
-
+            submit_amount = requested_amount if requested_amount is not None else amount
+            order = await self.controller.submit_trade_with_preflight(
+                symbol=symbol,
+                side=side,
+                amount=submit_amount,
+                quantity_mode=quantity_mode,
+                order_type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                source="manual",
+                strategy_name="Manual",
+                reason="Manual order",
+            )
             status_text = str(order.get("status") or "submitted").replace("_", " ").upper()
-            display_amount = requested_amount if requested_amount is not None else amount
+            display_amount = order.get(
+                "applied_requested_mode_amount",
+                requested_amount if requested_amount is not None else amount,
+            )
+            requested_display_amount = order.get(
+                "requested_amount",
+                requested_amount if requested_amount is not None else amount,
+            )
             display_mode = self._normalize_manual_trade_quantity_mode(quantity_mode)
+            sizing_summary = str(order.get("sizing_summary") or "").strip()
+            ai_sizing_reason = str(order.get("ai_sizing_reason") or "").strip()
+            requested_suffix = (
+                f" | requested {requested_display_amount} {display_mode}"
+                if bool(order.get("size_adjusted"))
+                else ""
+            )
+            sizing_suffix = f" | {sizing_summary}" if sizing_summary else ""
+            ai_suffix = f" | ChatGPT size note: {ai_sizing_reason}" if ai_sizing_reason else ""
             self.system_console.log(
-                f"Manual order {status_text}: {side.upper()} {display_amount} {display_mode} {symbol} ({order_type})",
+                (
+                    f"Manual order {status_text}: {side.upper()} {display_amount} {display_mode} "
+                    f"{symbol} ({order_type}){requested_suffix}{sizing_suffix}{ai_suffix}"
+                ),
                 "INFO",
             )
+            message = f"{status_text.title()} {side.upper()} {display_amount} {display_mode} {symbol}."
+            if bool(order.get("size_adjusted")):
+                message += f"\nRequested: {requested_display_amount} {display_mode}"
+            if sizing_summary:
+                message += f"\nSizing: {sizing_summary}"
+            if ai_sizing_reason:
+                message += f"\nChatGPT size note: {ai_sizing_reason}"
             self._show_async_message(
                 "Manual Order",
-                f"{status_text.title()} {side.upper()} {display_amount} {display_mode} {symbol}.",
+                message,
                 QMessageBox.Icon.Information,
             )
         except Exception as exc:
@@ -5417,31 +5886,53 @@ class Terminal(QMainWindow):
     def _multi_chart_layout(self):
 
         try:
-            if self._chart_tabs_ready():
-                for index in reversed(range(self.chart_tabs.count())):
-                    page = self.chart_tabs.widget(index)
-                    if getattr(page, "objectName", lambda: "")() == "multi_chart_page":
-                        self._close_chart_tab(index)
-
-            symbols = list(dict.fromkeys((getattr(self.controller, "symbols", []) or [])[:4]))
+            symbols = self._multi_chart_symbols(max_count=4)
             if not symbols:
+                if hasattr(self, "system_console") and self.system_console is not None:
+                    self.system_console.log("No symbols are available to build a multi-chart workspace.", "INFO")
                 return
+
+            timeframe = str(self.current_timeframe or "1h").strip().lower() or "1h"
+            self._close_multi_chart_pages()
 
             screen = QApplication.primaryScreen()
             available = screen.availableGeometry() if screen is not None else self.geometry()
-            width = max(420, available.width() // 2)
-            height = max(320, available.height() // 2)
+            count = len(symbols)
+            columns = 1 if count == 1 else 2
+            rows = max(1, int(np.ceil(count / columns)))
+            width = max(420, available.width() // columns)
+            height = max(320, available.height() // rows)
 
-            positions = [
-                (available.x(), available.y()),
-                (available.x() + width, available.y()),
-                (available.x(), available.y() + height),
-                (available.x() + width, available.y() + height),
-            ]
+            opened_windows = []
+            preferred_window = None
+            preferred_symbol = str(self._current_chart_symbol() or getattr(self, "symbol", "")).strip().upper()
 
-            for symbol, (x, y) in zip(symbols, positions):
-                rect = type(available)(x, y, width, height)
-                self._open_or_focus_detached_chart(symbol, self.current_timeframe, geometry=rect)
+            for index, symbol in enumerate(symbols):
+                row = index // columns
+                column = index % columns
+                rect = QRect(
+                    available.x() + (column * width),
+                    available.y() + (row * height),
+                    width,
+                    height,
+                )
+                window = self._open_or_focus_detached_chart(
+                    symbol,
+                    timeframe,
+                    geometry=rect,
+                    compact_view=True,
+                )
+                if self._is_qt_object_alive(window):
+                    opened_windows.append(window)
+                    if preferred_window is None or str(symbol).upper() == preferred_symbol:
+                        preferred_window = window
+
+            if self._is_qt_object_alive(preferred_window):
+                preferred_window.raise_()
+                preferred_window.activateWindow()
+            elif opened_windows:
+                opened_windows[-1].raise_()
+                opened_windows[-1].activateWindow()
 
         except Exception as e:
 
@@ -9007,6 +9498,14 @@ def _hotfix_qdate_to_text(value):
     return qdate.toString("yyyy-MM-dd") if qdate is not None else ""
 
 
+def _hotfix_qdate_to_utc_boundary_text(value, *, end_of_day=False):
+    qdate = _hotfix_qdate_from_value(value)
+    if qdate is None or not qdate.isValid():
+        return None
+    suffix = "23:59:59.999999+00:00" if end_of_day else "00:00:00+00:00"
+    return f"{qdate.toString('yyyy-MM-dd')}T{suffix}"
+
+
 def _hotfix_clamp_qdate(value, minimum, maximum):
     if value is None or not value.isValid():
         return minimum
@@ -9324,7 +9823,13 @@ async def _hotfix_load_backtest_history(self, window=None, force=False):
         f"Loading exchange candles for {symbol} {timeframe} covering {requested_range} (fetch limit {limit}, target bars {requested_limit}).",
         "INFO",
     )
-    await self.controller.request_candle_data(symbol=symbol, timeframe=timeframe, limit=limit)
+    await self.controller.request_candle_data(
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+        start_time=_hotfix_qdate_to_utc_boundary_text(start_date, end_of_day=False),
+        end_time=_hotfix_qdate_to_utc_boundary_text(end_date, end_of_day=True),
+    )
 
     context = await _hotfix_prepare_backtest_context_with_selection(
         self,
@@ -9495,6 +10000,8 @@ async def _hotfix_prepare_backtest_context_with_selection(self, symbol=None, tim
             symbol=symbol,
             timeframe=timeframe,
             limit=fetch_limit,
+            start_time=_hotfix_qdate_to_utc_boundary_text(selected_start_date, end_of_day=False),
+            end_time=_hotfix_qdate_to_utc_boundary_text(selected_end_date, end_of_day=True),
         )
         frame = (getattr(self.controller, "candle_buffers", {}).get(symbol) or {}).get(timeframe)
     frame = candles_to_df(frame)
@@ -11981,6 +12488,7 @@ def _hotfix_collect_settings_values(self, window=None):
         "hedging_enabled": bool(window._settings_hedging_enabled.currentData()),
         "refresh_interval_ms": int(window._settings_refresh_ms.value()),
         "orderbook_interval_ms": int(window._settings_orderbook_ms.value()),
+        "forex_candle_price_component": window._settings_forex_candle_source.currentData(),
         "show_bid_ask_lines": window._settings_bid_ask_mode.currentData(),
         "candle_up_color": getattr(window, "_settings_up_color", self.candle_up_color),
         "candle_down_color": getattr(window, "_settings_down_color", self.candle_down_color),
@@ -12079,6 +12587,13 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
     orderbook_interval_ms = max(250, int(values.get("orderbook_interval_ms", 1500)))
     database_mode = str(values.get("database_mode", getattr(self.controller, "database_mode", "local")) or "local").strip().lower()
     database_url = str(values.get("database_url", getattr(self.controller, "database_url", "")) or "").strip()
+    forex_candle_price_component = str(
+        values.get(
+            "forex_candle_price_component",
+            getattr(self.controller, "forex_candle_price_component", "bid"),
+        )
+        or "bid"
+    ).strip().lower()
     show_bid_ask_lines = bool(values.get("show_bid_ask_lines", getattr(self, "show_bid_ask_lines", True)))
     candle_up_color = values.get("candle_up_color", getattr(self, "candle_up_color", "#26a69a"))
     candle_down_color = values.get("candle_down_color", getattr(self, "candle_down_color", "#ef5350"))
@@ -12095,6 +12610,16 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
         self.controller.set_market_trade_preference(market_trade_preference)
     market_trade_preference = str(
         getattr(self.controller, "market_trade_preference", market_trade_preference) or market_trade_preference
+    ).strip().lower()
+    if hasattr(self.controller, "set_forex_candle_price_component"):
+        self.controller.set_forex_candle_price_component(forex_candle_price_component)
+    forex_candle_price_component = str(
+        getattr(
+            self.controller,
+            "forex_candle_price_component",
+            forex_candle_price_component,
+        )
+        or forex_candle_price_component
     ).strip().lower()
     if hasattr(self.controller, "configure_storage_database"):
         self.controller.configure_storage_database(
@@ -12263,6 +12788,7 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
         self.settings.setValue("terminal/current_timeframe", timeframe)
         self.settings.setValue("terminal/order_type", order_type)
         self.settings.setValue("trading/market_type", market_trade_preference)
+        self.settings.setValue("market_data/forex_candle_price_component", forex_candle_price_component)
         self.settings.setValue("terminal/history_limit", history_limit)
         self.settings.setValue("terminal/initial_capital", initial_capital)
         self.settings.setValue("terminal/refresh_interval_ms", refresh_interval_ms)
@@ -12389,6 +12915,12 @@ def _hotfix_show_settings_window(self):
         bid_ask_mode.addItem("Show", True)
         bid_ask_mode.addItem("Hide", False)
 
+        forex_candle_source = QComboBox()
+        forex_candle_source.addItem("Bid (MT4-style)", "bid")
+        forex_candle_source.addItem("Mid", "mid")
+        forex_candle_source.addItem("Ask", "ask")
+        forex_candle_source.setToolTip("MT4-style forex charts typically use bid candles.")
+
         up_color_btn = QPushButton()
         down_color_btn = QPushButton()
         up_color_btn.clicked.connect(
@@ -12408,6 +12940,7 @@ def _hotfix_show_settings_window(self):
             )
         )
 
+        display_form.addRow("Forex candle source", forex_candle_source)
         display_form.addRow("Bid/ask guide lines", bid_ask_mode)
         display_form.addRow("Bullish candle color", up_color_btn)
         display_form.addRow("Bearish candle color", down_color_btn)
@@ -12619,6 +13152,7 @@ def _hotfix_show_settings_window(self):
         window._settings_initial_capital = initial_capital
         window._settings_refresh_ms = refresh_ms
         window._settings_orderbook_ms = orderbook_ms
+        window._settings_forex_candle_source = forex_candle_source
         window._settings_bid_ask_mode = bid_ask_mode
         window._settings_up_button = up_color_btn
         window._settings_down_button = down_color_btn
@@ -12683,6 +13217,12 @@ def _hotfix_show_settings_window(self):
     window._settings_initial_capital.setValue(float(getattr(self.controller, "initial_capital", 10000)))
     window._settings_refresh_ms.setValue(float(refresh_interval))
     window._settings_orderbook_ms.setValue(float(orderbook_interval))
+    forex_candle_source_index = window._settings_forex_candle_source.findData(
+        getattr(self.controller, "forex_candle_price_component", "bid")
+    )
+    window._settings_forex_candle_source.setCurrentIndex(
+        forex_candle_source_index if forex_candle_source_index >= 0 else 0
+    )
     window._settings_bid_ask_mode.setCurrentIndex(0 if getattr(self, "show_bid_ask_lines", True) else 1)
 
     window._settings_up_color = getattr(self, "candle_up_color", "#26a69a")
@@ -12786,6 +13326,7 @@ def _hotfix_apply_settings_window(self, window=None):
                 f"Timeframe: {values['timeframe']} | "
                 f"Order type: {values['order_type']} | "
                 f"Venue: {values['market_trade_preference']} | "
+                f"FX candles: {str(values.get('forex_candle_price_component') or 'bid').capitalize()} | "
                 f"History: {values['history_limit']} | "
                 f"Bid/ask lines: {'shown' if values['show_bid_ask_lines'] else 'hidden'} | "
                 f"News auto: {'enabled' if values['news_autotrade_enabled'] else 'disabled'} | "
@@ -12829,6 +13370,10 @@ def _hotfix_restore_settings(self):
         "hedging_enabled": _hotfix_settings_bool(self.settings.value("trading/hedging_enabled", getattr(self.controller, "hedging_enabled", True)), getattr(self.controller, "hedging_enabled", True)),
         "refresh_interval_ms": _hotfix_settings_int(self.settings.value("terminal/refresh_interval_ms", 1000), 1000),
         "orderbook_interval_ms": _hotfix_settings_int(self.settings.value("terminal/orderbook_interval_ms", 1500), 1500),
+        "forex_candle_price_component": self.settings.value(
+            "market_data/forex_candle_price_component",
+            getattr(self.controller, "forex_candle_price_component", "bid"),
+        ),
         "show_bid_ask_lines": _hotfix_settings_bool(self.settings.value("terminal/show_bid_ask_lines", getattr(self, "show_bid_ask_lines", True)), getattr(self, "show_bid_ask_lines", True)),
         "candle_up_color": self.settings.value("chart/candle_up_color", getattr(self, "candle_up_color", "#26a69a")),
         "candle_down_color": self.settings.value("chart/candle_down_color", getattr(self, "candle_down_color", "#ef5350")),
@@ -12889,6 +13434,7 @@ def _hotfix_close_event(self, event):
         "timeframe": getattr(self, "current_timeframe", getattr(self.controller, "time_frame", "1h")),
         "order_type": getattr(self, "order_type", getattr(self.controller, "order_type", "limit")),
         "market_trade_preference": getattr(self.controller, "market_trade_preference", "auto"),
+        "forex_candle_price_component": getattr(self.controller, "forex_candle_price_component", "bid"),
         "history_limit": getattr(self.controller, "limit", 50000),
         "initial_capital": getattr(self.controller, "initial_capital", 10000),
         "hedging_enabled": getattr(self.controller, "hedging_enabled", True),

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import socket
@@ -20,6 +21,30 @@ class OandaBroker(BaseBroker):
         "1d": "D",
         "1w": "W",
     }
+    CANDLE_PRICE_COMPONENT_MAP = {
+        "b": "B",
+        "bid": "B",
+        "a": "A",
+        "ask": "A",
+        "m": "M",
+        "mid": "M",
+        "midpoint": "M",
+    }
+    CANDLE_PRICE_BUCKET_MAP = {
+        "B": "bid",
+        "A": "ask",
+        "M": "mid",
+    }
+    GRANULARITY_SECONDS_MAP = {
+        "M1": 60,
+        "M5": 300,
+        "M15": 900,
+        "M30": 1800,
+        "H1": 3600,
+        "H4": 14400,
+        "D": 86400,
+        "W": 604800,
+    }
 
     def __init__(self, config):
         super().__init__()
@@ -36,6 +61,11 @@ class OandaBroker(BaseBroker):
             "https://api-fxpractice.oanda.com"
             if self.mode in {"paper", "practice", "sandbox"}
             else "https://api-fxtrade.oanda.com"
+        )
+        options = dict(getattr(config, "options", None) or {})
+        params = dict(getattr(config, "params", None) or {})
+        self.candle_price_component = self._normalize_candle_price_component(
+            options.get("candle_price_component", params.get("candle_price_component", "bid"))
         )
 
         self.session = None
@@ -129,6 +159,66 @@ class OandaBroker(BaseBroker):
     def _normalize_granularity(self, timeframe):
         key = str(timeframe or "1h").lower()
         return self.GRANULARITY_MAP.get(key, "H1")
+
+    @classmethod
+    def _normalize_candle_price_component(cls, value):
+        normalized = str(value or "bid").strip().lower()
+        return cls.CANDLE_PRICE_COMPONENT_MAP.get(normalized, "B")
+
+    @classmethod
+    def _candle_price_bucket(cls, component):
+        normalized = cls._normalize_candle_price_component(component)
+        return cls.CANDLE_PRICE_BUCKET_MAP.get(normalized, "bid")
+
+    def set_candle_price_component(self, value):
+        normalized = self._normalize_candle_price_component(value)
+        self.candle_price_component = normalized
+
+        config = getattr(self, "config", None)
+        if config is not None:
+            options = dict(getattr(config, "options", None) or {})
+            options["candle_price_component"] = self._candle_price_bucket(normalized)
+            try:
+                config.options = options
+            except Exception:
+                pass
+
+        return self._candle_price_bucket(normalized)
+
+    @classmethod
+    def _granularity_seconds(cls, granularity):
+        return cls.GRANULARITY_SECONDS_MAP.get(str(granularity or "").upper())
+
+    @staticmethod
+    def _normalize_time_boundary(value, *, end_of_day=False):
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            timestamp = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            if "T" not in text and len(text) <= 10:
+                text = (
+                    f"{text}T23:59:59.999999+00:00"
+                    if end_of_day
+                    else f"{text}T00:00:00+00:00"
+                )
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            timestamp = datetime.fromisoformat(text)
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+        return timestamp
+
+    @staticmethod
+    def _format_time_boundary(value):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _extract_price_entry(self, payload, symbol):
         prices = payload.get("prices", []) if isinstance(payload, dict) else []
@@ -382,7 +472,7 @@ class OandaBroker(BaseBroker):
 
         return {"symbol": self._normalize_symbol(symbol), "bids": bids, "asks": asks}
 
-    async def fetch_ohlcv(self, symbol, timeframe="H1", limit=100):
+    async def fetch_ohlcv(self, symbol, timeframe="H1", limit=100, start_time=None, end_time=None):
         instrument = self._normalize_symbol(symbol)
         granularity = self._normalize_granularity(timeframe)
         requested = max(1, int(limit or 100))
@@ -390,10 +480,93 @@ class OandaBroker(BaseBroker):
         seen_times = set()
         cursor_to = None
         previous_oldest = None
+        price_component = self._normalize_candle_price_component(
+            getattr(self, "candle_price_component", "bid")
+        )
+        candle_price_bucket = self._candle_price_bucket(price_component)
+        start_boundary = self._normalize_time_boundary(start_time, end_of_day=False)
+        end_boundary = self._normalize_time_boundary(end_time, end_of_day=True)
+        step_seconds = self._granularity_seconds(granularity)
+
+        if start_boundary is not None and end_boundary is not None:
+            if end_boundary < start_boundary:
+                end_boundary = start_boundary
+
+            current_from = start_boundary
+            while current_from <= end_boundary and len(collected) < requested:
+                remaining = max(1, requested - len(collected))
+                batch_limit = min(remaining, self.MAX_OHLCV_COUNT)
+                if step_seconds:
+                    next_batch_from = current_from + timedelta(seconds=step_seconds * batch_limit)
+                    if next_batch_from > end_boundary:
+                        current_to = end_boundary
+                    else:
+                        current_to = current_from + timedelta(
+                            seconds=step_seconds * max(batch_limit - 1, 0)
+                        )
+                else:
+                    current_to = end_boundary
+
+                params = {
+                    "granularity": granularity,
+                    "price": price_component,
+                    "from": self._format_time_boundary(current_from),
+                    "to": self._format_time_boundary(current_to),
+                }
+                payload = await self._request(
+                    "GET",
+                    f"/v3/instruments/{instrument}/candles",
+                    params=params,
+                )
+
+                batch = []
+                for candle in payload.get("candles", []):
+                    price_payload = (
+                        candle.get(candle_price_bucket)
+                        or candle.get("mid")
+                        or candle.get("bid")
+                        or candle.get("ask")
+                        or {}
+                    )
+                    if not candle.get("complete"):
+                        continue
+                    timestamp = candle.get("time")
+                    if not timestamp:
+                        continue
+                    batch.append(
+                        [
+                            timestamp,
+                            float(price_payload.get("o", 0) or 0),
+                            float(price_payload.get("h", 0) or 0),
+                            float(price_payload.get("l", 0) or 0),
+                            float(price_payload.get("c", 0) or 0),
+                            float(candle.get("volume", 0) or 0),
+                        ]
+                    )
+
+                batch.sort(key=lambda row: row[0])
+                for row in batch:
+                    if row[0] in seen_times:
+                        continue
+                    seen_times.add(row[0])
+                    collected.append(row)
+
+                if current_to >= end_boundary:
+                    break
+                if step_seconds:
+                    current_from = current_to + timedelta(seconds=step_seconds)
+                else:
+                    break
+
+            return collected[-requested:]
 
         while len(collected) < requested:
             batch_size = min(requested - len(collected), self.MAX_OHLCV_COUNT)
-            params = {"granularity": granularity, "count": batch_size, "price": "M"}
+            params = {
+                "granularity": granularity,
+                "count": batch_size,
+                "price": price_component,
+            }
             if cursor_to:
                 params["to"] = cursor_to
 
@@ -405,7 +578,13 @@ class OandaBroker(BaseBroker):
 
             batch = []
             for candle in payload.get("candles", []):
-                mid = candle.get("mid", {})
+                price_payload = (
+                    candle.get(candle_price_bucket)
+                    or candle.get("mid")
+                    or candle.get("bid")
+                    or candle.get("ask")
+                    or {}
+                )
                 if not candle.get("complete"):
                     continue
                 timestamp = candle.get("time")
@@ -414,10 +593,10 @@ class OandaBroker(BaseBroker):
                 batch.append(
                     [
                         timestamp,
-                        float(mid.get("o", 0) or 0),
-                        float(mid.get("h", 0) or 0),
-                        float(mid.get("l", 0) or 0),
-                        float(mid.get("c", 0) or 0),
+                        float(price_payload.get("o", 0) or 0),
+                        float(price_payload.get("h", 0) or 0),
+                        float(price_payload.get("l", 0) or 0),
+                        float(price_payload.get("c", 0) or 0),
                         float(candle.get("volume", 0) or 0),
                     ]
                 )
@@ -526,34 +705,46 @@ class OandaBroker(BaseBroker):
         position_id=None,
     ):
         instrument = self._normalize_symbol(symbol)
-        target_position = position if isinstance(position, dict) else None
-        if target_position is None:
-            targets = await self.fetch_positions(symbols=[instrument])
-            if position_id:
-                normalized_id = str(position_id).strip().lower()
-                targets = [
-                    item
-                    for item in targets
-                    if str(item.get("position_id") or item.get("id") or "").strip().lower() == normalized_id
-                ]
-            if position_side:
-                normalized_side = str(position_side).strip().lower()
-                targets = [
-                    item
-                    for item in targets
-                    if str(item.get("position_side") or item.get("side") or "").strip().lower() == normalized_side
-                ]
-            if len(targets) > 1:
-                raise ValueError(
-                    f"Multiple hedge legs are open for {instrument}. Choose the long or short leg to close."
-                )
-            target_position = targets[0] if targets else None
+        snapshot_position = position if isinstance(position, dict) else None
+        normalized_id = str(
+            position_id
+            or (snapshot_position or {}).get("position_id")
+            or (snapshot_position or {}).get("id")
+            or ""
+        ).strip().lower()
+        normalized_side = str(
+            position_side
+            or (snapshot_position or {}).get("position_side")
+            or (snapshot_position or {}).get("side")
+            or ""
+        ).strip().lower()
 
+        targets = await self.fetch_positions(symbols=[instrument])
+        if normalized_id:
+            targets = [
+                item
+                for item in targets
+                if str(item.get("position_id") or item.get("id") or "").strip().lower() == normalized_id
+            ]
+        if normalized_side:
+            targets = [
+                item
+                for item in targets
+                if str(item.get("position_side") or item.get("side") or "").strip().lower() == normalized_side
+            ]
+        if len(targets) > 1:
+            raise ValueError(
+                f"Multiple hedge legs are open for {instrument}. Choose the long or short leg to close."
+            )
+
+        target_position = targets[0] if targets else snapshot_position
+        if not targets and (normalized_id or normalized_side or snapshot_position is not None):
+            raise RuntimeError(f"No live {instrument} position is available to close.")
         if not isinstance(target_position, dict):
             return None
 
         leg_side = str(
-            position_side
+            normalized_side
             or target_position.get("position_side")
             or target_position.get("side")
             or ""
@@ -563,12 +754,19 @@ class OandaBroker(BaseBroker):
 
         meta = await self._get_instrument_meta(symbol)
         units_precision = int(meta.get("tradeUnitsPrecision", 0) or 0)
-        close_amount = self._position_amount(target_position) if amount is None else abs(float(amount))
+        live_amount = self._position_amount(target_position)
+        if live_amount <= 0:
+            raise RuntimeError(f"No live {instrument} position is available to close.")
+
+        requested_amount = live_amount if amount is None else abs(float(amount))
+        close_amount = min(requested_amount, live_amount)
         if close_amount <= 0:
             return None
+        precision_step = 1.0 / (10 ** units_precision) if units_precision > 0 else 1.0
+        close_all = amount is None or requested_amount >= (live_amount - (precision_step / 2.0))
 
         payload_key = "shortUnits" if leg_side == "short" else "longUnits"
-        payload_value = "ALL" if amount is None else self._format_units(close_amount, units_precision)
+        payload_value = "ALL" if close_all else self._format_units(close_amount, units_precision)
         payload = {payload_key: payload_value}
         payload.update(dict(params or {}))
         response = await self._request(

@@ -53,19 +53,19 @@ TOOL_WINDOWS = {
 }
 WORKSPACE_PRESETS = {
     "trading": {
-        "docks": {"market_watch_dock", "positions_dock", "trade_log_dock", "orderbook_dock", "system_status_dock", "system_console_dock"},
+        "docks": {"market_watch_dock", "positions_dock", "trade_log_dock", "orderbook_dock"},
         "tools": [],
     },
     "research": {
-        "docks": {"market_watch_dock", "orderbook_dock", "strategy_scorecard_dock", "strategy_debug_dock", "ai_signal_dock", "system_console_dock"},
+        "docks": {"market_watch_dock", "orderbook_dock", "ai_signal_dock"},
         "tools": ["trade_recommendations", "quant_pm", "agent_timeline"],
     },
     "risk": {
-        "docks": {"positions_dock", "orderbook_dock", "risk_heatmap_dock", "system_status_dock", "system_console_dock"},
+        "docks": {"positions_dock", "orderbook_dock", "risk_heatmap_dock"},
         "tools": ["portfolio_exposure", "position_analysis"],
     },
     "review": {
-        "docks": {"positions_dock", "trade_log_dock", "ai_signal_dock", "system_console_dock", "system_status_dock"},
+        "docks": {"positions_dock", "trade_log_dock", "ai_signal_dock"},
         "tools": ["performance_analytics", "closed_trade_journal", "notification_center"],
     },
 }

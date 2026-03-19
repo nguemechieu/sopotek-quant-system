@@ -35,6 +35,7 @@ class FakeOandaSession:
         self.closed = False
         self.last_order_payload = None
         self.last_close_payload = None
+        self.last_candle_params = None
 
     def request(self, method, url, headers=None, params=None, json=None):
         if url.endswith("/pricing"):
@@ -50,12 +51,27 @@ class FakeOandaSession:
                 }
             )
         if "/candles" in url:
+            params = dict(params or {})
+            self.last_candle_params = params
+            price_component = str(params.get("price") or "M").upper()
+            candle_key = {"B": "bid", "A": "ask", "M": "mid"}.get(price_component, "mid")
+            candle_payloads = {
+                "bid": [
+                    {"complete": True, "time": "t1", "bid": {"o": "0.9998", "h": "1.9998", "l": "0.4998", "c": "1.4998"}, "volume": 10},
+                    {"complete": True, "time": "t2", "bid": {"o": "1.4998", "h": "2.4998", "l": "0.9998", "c": "1.9998"}, "volume": 12},
+                ],
+                "ask": [
+                    {"complete": True, "time": "t1", "ask": {"o": "1.0002", "h": "2.0002", "l": "0.5002", "c": "1.5002"}, "volume": 10},
+                    {"complete": True, "time": "t2", "ask": {"o": "1.5002", "h": "2.5002", "l": "1.0002", "c": "2.0002"}, "volume": 12},
+                ],
+                "mid": [
+                    {"complete": True, "time": "t1", "mid": {"o": "1.0", "h": "2.0", "l": "0.5", "c": "1.5"}, "volume": 10},
+                    {"complete": True, "time": "t2", "mid": {"o": "1.5", "h": "2.5", "l": "1.0", "c": "2.0"}, "volume": 12},
+                ],
+            }
             return FakeResponse(
                 {
-                    "candles": [
-                        {"complete": True, "time": "t1", "mid": {"o": "1.0", "h": "2.0", "l": "0.5", "c": "1.5"}, "volume": 10},
-                        {"complete": True, "time": "t2", "mid": {"o": "1.5", "h": "2.5", "l": "1.0", "c": "2.0"}, "volume": 12},
-                    ]
+                    "candles": candle_payloads[candle_key]
                 }
             )
         if url.endswith("/summary"):
@@ -171,6 +187,7 @@ def test_oanda_broker_normalizes_common_methods(monkeypatch):
         assert (await broker.fetch_ticker("EUR/USD"))["ask"] == 1.1002
         assert (await broker.fetch_orderbook("EUR/USD"))["bids"][0][0] == 1.1
         assert len(await broker.fetch_ohlcv("EUR/USD", timeframe="1h", limit=2)) == 2
+        assert broker.session.last_candle_params["price"] == "B"
         assert (await broker.fetch_balance())["equity"] == 1100.0
         assert await broker.fetch_symbols() == ["EUR_USD", "GBP_USD"]
         positions = await broker.fetch_positions()
@@ -179,6 +196,34 @@ def test_oanda_broker_normalizes_common_methods(monkeypatch):
         assert {item["position_side"] for item in positions} == {"long", "short"}
         assert len(await broker.fetch_open_orders("EUR/USD")) == 1
         assert len(await broker.fetch_closed_orders("EUR/USD")) == 0
+        await broker.close()
+
+    asyncio.run(scenario())
+
+
+def test_oanda_broker_supports_switching_between_bid_and_mid_candles(monkeypatch):
+    import broker.oanda_broker as oanda_module
+
+    monkeypatch.setattr(oanda_module.aiohttp, "ClientSession", FakeOandaSession)
+
+    async def scenario():
+        broker = OandaBroker(
+            SimpleNamespace(
+                api_key="token",
+                account_id="acct-1",
+                mode="practice",
+                options={"candle_price_component": "mid"},
+            )
+        )
+
+        mid_candles = await broker.fetch_ohlcv("EUR/USD", timeframe="1h", limit=2)
+        assert broker.session.last_candle_params["price"] == "M"
+        assert mid_candles[0][1:5] == [1.0, 2.0, 0.5, 1.5]
+
+        broker.set_candle_price_component("bid")
+        bid_candles = await broker.fetch_ohlcv("EUR/USD", timeframe="1h", limit=2)
+        assert broker.session.last_candle_params["price"] == "B"
+        assert bid_candles[0][1:5] == [0.9998, 1.9998, 0.4998, 1.4998]
         await broker.close()
 
     asyncio.run(scenario())
@@ -467,6 +512,29 @@ def test_oanda_broker_closes_specific_hedge_leg(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_oanda_broker_clamps_stale_partial_close_to_live_leg_size(monkeypatch):
+    import broker.oanda_broker as oanda_module
+
+    monkeypatch.setattr(oanda_module.aiohttp, "ClientSession", FakeOandaSession)
+
+    async def scenario():
+        broker = OandaBroker(SimpleNamespace(api_key="token", account_id="acct-1", mode="practice"))
+        stale_short_leg = {
+            "symbol": "EUR_USD",
+            "position_id": "EUR_USD:short",
+            "position_side": "short",
+            "amount": 10.0,
+            "units": -10.0,
+        }
+        result = await broker.close_position("EUR/USD", amount=10.0, position=stale_short_leg)
+        assert result["position_side"] == "short"
+        assert result["amount"] == 2.0
+        assert broker.session.last_close_payload == {"shortUnits": "ALL"}
+        await broker.close()
+
+    asyncio.run(scenario())
+
+
 def test_oanda_broker_surfaces_reject_reason(monkeypatch):
     import aiohttp
     import broker.oanda_broker as oanda_module
@@ -552,7 +620,14 @@ def test_oanda_broker_paginates_ohlcv_history(monkeypatch):
     monkeypatch.setattr(oanda_module.aiohttp, "ClientSession", PagingOandaSession)
 
     async def scenario():
-        broker = OandaBroker(SimpleNamespace(api_key="token", account_id="acct-1", mode="practice"))
+        broker = OandaBroker(
+            SimpleNamespace(
+                api_key="token",
+                account_id="acct-1",
+                mode="practice",
+                options={"candle_price_component": "mid"},
+            )
+        )
         broker.MAX_OHLCV_COUNT = 2
 
         candles = await broker.fetch_ohlcv("EUR/USD", timeframe="1h", limit=4)
@@ -566,6 +641,67 @@ def test_oanda_broker_paginates_ohlcv_history(monkeypatch):
         ]
         assert len(broker.session.calls) == 2
         assert broker.session.calls[1]["to"] == "2026-01-03T00:00:00Z"
+        await broker.close()
+
+    asyncio.run(scenario())
+
+
+def test_oanda_broker_paginates_explicit_date_range(monkeypatch):
+    import broker.oanda_broker as oanda_module
+
+    class RangePagingOandaSession:
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+            self.calls = []
+
+        def request(self, method, url, headers=None, params=None, json=None):
+            if "/candles" not in url:
+                raise AssertionError(f"Unhandled Oanda URL: {method} {url}")
+
+            params = dict(params or {})
+            self.calls.append(params)
+            start = str(params.get("from") or "")
+            if "2026-01-01" in start:
+                candles = [
+                    {"complete": True, "time": "2026-01-01T00:00:00Z", "bid": {"o": "1.0", "h": "1.1", "l": "0.9", "c": "1.05"}, "volume": 10},
+                    {"complete": True, "time": "2026-01-02T00:00:00Z", "bid": {"o": "1.1", "h": "1.2", "l": "1.0", "c": "1.15"}, "volume": 11},
+                ]
+            else:
+                candles = [
+                    {"complete": True, "time": "2026-01-03T00:00:00Z", "bid": {"o": "1.2", "h": "1.3", "l": "1.1", "c": "1.25"}, "volume": 12},
+                    {"complete": True, "time": "2026-01-04T00:00:00Z", "bid": {"o": "1.3", "h": "1.4", "l": "1.2", "c": "1.35"}, "volume": 13},
+                ]
+            return FakeResponse({"candles": candles})
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(oanda_module.aiohttp, "ClientSession", RangePagingOandaSession)
+
+    async def scenario():
+        broker = OandaBroker(SimpleNamespace(api_key="token", account_id="acct-1", mode="practice"))
+        broker.MAX_OHLCV_COUNT = 2
+
+        candles = await broker.fetch_ohlcv(
+            "EUR/USD",
+            timeframe="1d",
+            limit=10,
+            start_time="2026-01-01",
+            end_time="2026-01-04",
+        )
+
+        assert [row[0] for row in candles] == [
+            "2026-01-01T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+            "2026-01-03T00:00:00Z",
+            "2026-01-04T00:00:00Z",
+        ]
+        assert len(broker.session.calls) == 2
+        assert "count" not in broker.session.calls[0]
+        assert broker.session.calls[0]["from"].startswith("2026-01-01T00:00:00")
+        assert broker.session.calls[0]["to"].startswith("2026-01-02T00:00:00")
+        assert broker.session.calls[1]["from"].startswith("2026-01-03T00:00:00")
+        assert broker.session.calls[1]["to"].startswith("2026-01-04T23:59:59")
         await broker.close()
 
     asyncio.run(scenario())

@@ -1492,34 +1492,167 @@ class SopotekTrading:
         )
         return review
 
+    def _review_quantity_mode(self, review, signal):
+        for payload in (review, signal):
+            if not isinstance(payload, dict):
+                continue
+            value = str(payload.get("quantity_mode") or "").strip().lower()
+            if value:
+                return value
+
+        controller = self.controller
+        resolver = getattr(controller, "trade_quantity_context", None) if controller is not None else None
+        if not callable(resolver):
+            return None
+
+        symbol = (
+            (review or {}).get("symbol")
+            or (signal or {}).get("symbol")
+            or ""
+        )
+        try:
+            context = resolver(symbol)
+        except Exception:
+            self.logger.debug("Unable to resolve quantity mode for %s", symbol, exc_info=True)
+            return None
+
+        if isinstance(context, dict) and context.get("supports_lots"):
+            value = str(context.get("default_mode") or "lots").strip().lower()
+            return value or "lots"
+        return None
+
+    async def _preflight_execution_review(self, review, signal):
+        controller = self.controller
+        preflight = getattr(controller, "_preflight_trade_submission", None) if controller is not None else None
+        if not callable(preflight):
+            return None
+
+        return await preflight(
+            symbol=review.get("symbol"),
+            side=review.get("side"),
+            amount=review.get("amount"),
+            quantity_mode=self._review_quantity_mode(review, signal),
+            order_type=review.get("type", "market"),
+            price=review.get("price"),
+            stop_price=review.get("stop_price"),
+            stop_loss=review.get("stop_loss"),
+            take_profit=review.get("take_profit"),
+        )
+
+    async def _reject_execution_review(self, review, signal, reason):
+        normalized_reason = str(reason or "Automated order preflight rejected the trade.").strip()
+        submitted_order = {
+            "symbol": review.get("symbol"),
+            "side": review.get("side"),
+            "source": "bot",
+            "amount": review.get("amount"),
+            "type": review.get("type", "market"),
+            "price": review.get("price"),
+            "stop_price": review.get("stop_price"),
+            "stop_loss": review.get("stop_loss"),
+            "take_profit": review.get("take_profit"),
+            "strategy_name": review.get("strategy_name"),
+            "timeframe": review.get("timeframe"),
+            "signal_source_agent": review.get("signal_source_agent"),
+            "consensus_status": review.get("consensus_status"),
+            "adaptive_weight": review.get("adaptive_weight"),
+            "adaptive_score": review.get("adaptive_score"),
+            "reason": signal.get("reason") or normalized_reason,
+            "confidence": signal.get("confidence"),
+            "expected_price": signal.get("price"),
+            "pnl": signal.get("pnl"),
+            "execution_strategy": review.get("execution_strategy"),
+        }
+        rejected_execution = {
+            "symbol": review.get("symbol"),
+            "side": review.get("side"),
+            "source": "bot",
+            "amount": review.get("amount"),
+            "type": review.get("type", "market"),
+            "price": review.get("price"),
+            "status": "rejected",
+            "reason": normalized_reason,
+            "raw": {"error": normalized_reason},
+        }
+        self._record_pipeline_status(
+            review.get("symbol"),
+            "execution_preflight",
+            "rejected",
+            normalized_reason,
+            signal=signal,
+        )
+        await self.execution_manager._handle_order_update(
+            rejected_execution,
+            submitted_order,
+            allow_tracking=False,
+        )
+        return rejected_execution
+
     async def execute_review(self, review):
         if not isinstance(review, dict) or not review.get("approved"):
             return None
 
         signal = dict(review.get("signal") or {})
-        order = await self.execution_manager.execute(
-            symbol=review.get("symbol"),
-            side=review.get("side"),
-            amount=review.get("amount"),
-            price=review.get("price"),
-            source="bot",
-            strategy_name=review.get("strategy_name"),
-            timeframe=review.get("timeframe"),
-            signal_source_agent=review.get("signal_source_agent"),
-            consensus_status=review.get("consensus_status"),
-            adaptive_weight=review.get("adaptive_weight"),
-            adaptive_score=review.get("adaptive_score"),
-            reason=signal.get("reason"),
-            confidence=signal.get("confidence"),
-            expected_price=signal.get("price"),
-            pnl=signal.get("pnl"),
-            execution_strategy=review.get("execution_strategy"),
-            type=review.get("type", "market"),
-            stop_price=review.get("stop_price"),
-            stop_loss=review.get("stop_loss"),
-            take_profit=review.get("take_profit"),
-            params=review.get("execution_params"),
-        )
+        order_payload = {
+            "symbol": review.get("symbol"),
+            "side": review.get("side"),
+            "amount": review.get("amount"),
+            "price": review.get("price"),
+            "source": "bot",
+            "strategy_name": review.get("strategy_name"),
+            "timeframe": review.get("timeframe"),
+            "signal_source_agent": review.get("signal_source_agent"),
+            "consensus_status": review.get("consensus_status"),
+            "adaptive_weight": review.get("adaptive_weight"),
+            "adaptive_score": review.get("adaptive_score"),
+            "reason": signal.get("reason"),
+            "confidence": signal.get("confidence"),
+            "expected_price": signal.get("price"),
+            "pnl": signal.get("pnl"),
+            "execution_strategy": review.get("execution_strategy"),
+            "type": review.get("type", "market"),
+            "stop_price": review.get("stop_price"),
+            "stop_loss": review.get("stop_loss"),
+            "take_profit": review.get("take_profit"),
+            "params": review.get("execution_params"),
+        }
+
+        try:
+            preflight = await self._preflight_execution_review(review, signal)
+        except RuntimeError as exc:
+            return await self._reject_execution_review(review, signal, str(exc))
+        except Exception as exc:
+            self.logger.exception(
+                "Automated order preflight failed for %s",
+                review.get("symbol"),
+            )
+            return await self._reject_execution_review(
+                review,
+                signal,
+                f"Automated order preflight failed before broker submission: {exc}",
+            )
+
+        if isinstance(preflight, dict):
+            order_payload["amount"] = float(preflight.get("amount_units", order_payload["amount"]))
+            for key in (
+                "requested_amount",
+                "requested_mode",
+                "requested_amount_units",
+                "deterministic_amount_units",
+                "amount_units",
+                "applied_requested_mode_amount",
+                "size_adjusted",
+                "ai_adjusted",
+                "sizing_summary",
+                "sizing_notes",
+                "ai_sizing_reason",
+            ):
+                value = preflight.get(key)
+                if value not in (None, "", []):
+                    payload_key = "requested_quantity_mode" if key == "requested_mode" else key
+                    order_payload[payload_key] = value
+
+        order = await self.execution_manager.execute(**order_payload)
         return order
 
     async def process_signal(self, symbol, signal, dataset=None, timeframe=None, regime_snapshot=None, portfolio_snapshot=None):

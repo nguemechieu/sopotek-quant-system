@@ -25,6 +25,10 @@ class DummyBroker:
         return {"status": "filled"}
 
 
+class DummyOandaBroker(DummyBroker):
+    exchange_name = "oanda"
+
+
 class CleanupBroker(DummyBroker):
     def __init__(self, positions=None, orders=None):
         self.positions = list(positions or [])
@@ -110,6 +114,61 @@ def test_symbol_worker_uses_centralized_signal_processor(monkeypatch):
             "timeframe": "15m",
             "limit": 120,
             "publish_debug": True,
+        }
+    ]
+
+
+def test_symbol_worker_fallback_uses_trading_system_process_signal(monkeypatch):
+    calls = []
+
+    async def fast_sleep(_seconds):
+        worker.running = False
+        return None
+
+    async def fake_fetch_ohlcv(_symbol, timeframe="1h", limit=100):
+        return [[1, 100.0, 101.0, 99.0, 100.5, 10.0]]
+
+    async def fake_process_signal(symbol, signal, timeframe=None):
+        calls.append(
+            {
+                "symbol": symbol,
+                "signal": dict(signal),
+                "timeframe": timeframe,
+            }
+        )
+        worker.running = False
+        return {"status": "filled"}
+
+    class _Strategy:
+        def generate_signal(self, _candles):
+            return {"side": "buy", "amount": 0.5, "price": 1.1}
+
+    controller = SimpleNamespace(
+        trading_system=SimpleNamespace(process_signal=fake_process_signal),
+        _safe_fetch_ohlcv=fake_fetch_ohlcv,
+        publish_ai_signal=lambda *args, **kwargs: None,
+        publish_strategy_debug=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(symbol_worker_module.asyncio, "sleep", fast_sleep)
+
+    worker = SymbolWorker(
+        symbol="EUR/USD",
+        broker=DummyBroker(),
+        strategy=_Strategy(),
+        execution_manager=ExplodingExecutionManager(),
+        timeframe="5m",
+        limit=120,
+        controller=controller,
+    )
+
+    asyncio.run(worker.run())
+
+    assert calls == [
+        {
+            "symbol": "EUR/USD",
+            "signal": {"side": "buy", "amount": 0.5, "price": 1.1},
+            "timeframe": "5m",
         }
     ]
 
@@ -689,3 +748,92 @@ def test_sopotek_trading_uses_assigned_symbol_timeframe_when_available():
 
     assert trading._assigned_timeframe_for_symbol("EUR/USD", fallback="1h") == "4h"
     assert trading._assigned_timeframe_for_symbol("GBP/USD", fallback="1h") == "4h"
+
+
+def test_sopotek_trading_preflights_oanda_forex_bot_orders_as_lots():
+    controller = SimpleNamespace(
+        broker=DummyOandaBroker(),
+        symbols=["EUR/USD"],
+        time_frame="1h",
+        limit=200,
+        strategy_name="Trend Following",
+        strategy_params={},
+        max_portfolio_risk=0.10,
+        max_risk_per_trade=0.02,
+        max_position_size_pct=0.10,
+        max_gross_exposure_pct=2.0,
+        balances={"total": {"USD": 10000}},
+        initial_capital=10000,
+        market_data_repository=None,
+        trade_repository=None,
+        handle_trade_execution=lambda trade: None,
+        trade_quantity_context=lambda symbol: {
+            "symbol": symbol,
+            "supports_lots": True,
+            "default_mode": "lots",
+            "lot_units": 100000.0,
+        },
+    )
+
+    preflight_calls = {}
+
+    async def fake_preflight_trade_submission(**kwargs):
+        preflight_calls.update(kwargs)
+        return {
+            "requested_amount": 0.5,
+            "requested_mode": "lots",
+            "requested_amount_units": 50000.0,
+            "deterministic_amount_units": 42000.0,
+            "amount_units": 42000.0,
+            "applied_requested_mode_amount": 0.42,
+            "size_adjusted": True,
+            "ai_adjusted": False,
+            "sizing_summary": "Preflight reduced the order size.",
+            "sizing_notes": ["Free margin reduced the order size for this symbol."],
+            "ai_sizing_reason": "",
+        }
+
+    controller._preflight_trade_submission = fake_preflight_trade_submission
+    trading = SopotekTrading(controller=controller)
+    trading.risk_engine = None
+    trading.portfolio_allocator = None
+    trading.portfolio_risk_engine = None
+
+    captured = {}
+
+    async def fake_execute(**kwargs):
+        captured.update(kwargs)
+        return {"status": "filled", "amount": kwargs["amount"], "reason": "submitted"}
+
+    trading.execution_manager.execute = fake_execute
+
+    result = asyncio.run(
+        trading.execute_review(
+            {
+                "approved": True,
+                "symbol": "EUR/USD",
+                "side": "buy",
+                "amount": 0.5,
+                "price": 1.10,
+                "strategy_name": "Trend Following",
+                "type": "market",
+                "execution_strategy": "market",
+                "execution_params": {},
+                "signal": {
+                    "symbol": "EUR/USD",
+                    "side": "buy",
+                    "amount": 0.5,
+                    "price": 1.10,
+                    "confidence": 0.80,
+                    "reason": "forex breakout",
+                    "strategy_name": "Trend Following",
+                },
+            }
+        )
+    )
+
+    assert result["status"] == "filled"
+    assert preflight_calls["quantity_mode"] == "lots"
+    assert captured["amount"] == 42000.0
+    assert captured["requested_quantity_mode"] == "lots"
+    assert captured["applied_requested_mode_amount"] == 0.42

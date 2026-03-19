@@ -1,6 +1,5 @@
 import re
 from pathlib import Path
-
 from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
@@ -25,7 +24,7 @@ from PySide6.QtWidgets import (
 from config.config import AppConfig, BrokerConfig, RiskConfig, SystemConfig
 from config.credential_manager import CredentialManager
 from broker.market_venues import MARKET_VENUE_CHOICES, supported_market_venues_for_profile
-from frontend.ui.i18n import iter_supported_languages
+from frontend.ui.i18n import apply_runtime_translations, iter_supported_languages
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -985,6 +984,7 @@ class Dashboard(QWidget):
         self.controller.set_language(language_code)
 
     def apply_language(self):
+        previous_language = getattr(self, "_applied_language_code", None)
         self.setWindowTitle(self._tr("dashboard.window_title"))
 
         self.eyebrow_label.setText(self._tr("dashboard.hero_eyebrow"))
@@ -1084,6 +1084,12 @@ class Dashboard(QWidget):
             risk_block.label_widget.setText(self._tr("dashboard.risk_budget"))
 
         self._update_session_preview()
+        apply_runtime_translations(
+            self,
+            getattr(self.controller, "language_code", "en"),
+            previous_language=previous_language,
+        )
+        self._applied_language_code = getattr(self.controller, "language_code", "en")
 
     def _load_accounts_index(self):
         current = self.saved_account_box.currentText()
@@ -1548,6 +1554,9 @@ class Dashboard(QWidget):
             options={
                 "market_type": str(self.market_type_box.currentData() or "auto"),
                 "customer_region": customer_region,
+                "candle_price_component": str(
+                    getattr(self.controller, "forex_candle_price_component", "bid") or "bid"
+                ).strip().lower(),
             },
         )
 

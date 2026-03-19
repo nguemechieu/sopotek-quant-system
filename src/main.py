@@ -185,3 +185,9 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+else:
+    # If this module is imported, ensure that faulthandler is enabled for the
+    # hosting process. This is especially important for test runs, which may not
+    # execute the main() function.
+    _install_faulthandler()
+###  End of file.

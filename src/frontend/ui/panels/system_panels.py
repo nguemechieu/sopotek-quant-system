@@ -24,6 +24,7 @@ def create_system_console_panel(terminal):
     dock.setWidget(terminal.system_console)
 
     terminal.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    dock.hide()
     return dock
 
 

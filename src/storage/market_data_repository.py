@@ -92,6 +92,30 @@ class MarketDataRepository:
         except Exception:
             return None
 
+    def _normalize_boundary_timestamp_ms(self, value, *, end_of_day=False):
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            text_value = value.strip()
+            if not text_value:
+                return None
+            if "T" not in text_value and len(text_value) <= 10:
+                text_value = (
+                    f"{text_value}T23:59:59.999999+00:00"
+                    if end_of_day
+                    else f"{text_value}T00:00:00+00:00"
+                )
+            value = text_value
+        elif isinstance(value, datetime) and end_of_day:
+            if value.tzinfo is None:
+                value = value.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+            else:
+                value = value.astimezone(timezone.utc).replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        _timestamp, timestamp_ms = self._normalize_timestamp(value)
+        return timestamp_ms
+
     def save_candles(self, symbol, timeframe, candles, exchange=None):
         normalized_rows = []
         seen = set()
@@ -142,7 +166,7 @@ class MarketDataRepository:
             session.commit()
             return len(pending)
 
-    def get_candles(self, symbol, timeframe="1h", limit=300, exchange=None):
+    def get_candles(self, symbol, timeframe="1h", limit=300, exchange=None, start_time=None, end_time=None):
         with storage_db.SessionLocal() as session:
             stmt = select(Candle).where(Candle.symbol == str(symbol))
 
@@ -153,9 +177,23 @@ class MarketDataRepository:
                 exchange_value = str(exchange).lower()
                 stmt = stmt.where(or_(Candle.exchange == exchange_value, Candle.exchange.is_(None)))
 
-            stmt = stmt.order_by(Candle.timestamp_ms.desc()).limit(int(limit))
-            rows = list(session.execute(stmt).scalars().all())
-            rows.reverse()
+            start_timestamp_ms = self._normalize_boundary_timestamp_ms(start_time, end_of_day=False)
+            end_timestamp_ms = self._normalize_boundary_timestamp_ms(end_time, end_of_day=True)
+            if start_timestamp_ms is not None:
+                stmt = stmt.where(Candle.timestamp_ms >= int(start_timestamp_ms))
+            if end_timestamp_ms is not None:
+                stmt = stmt.where(Candle.timestamp_ms <= int(end_timestamp_ms))
+
+            range_requested = start_timestamp_ms is not None or end_timestamp_ms is not None
+            if range_requested:
+                stmt = stmt.order_by(Candle.timestamp_ms.asc())
+                rows = list(session.execute(stmt).scalars().all())
+                if limit is not None:
+                    rows = rows[-max(1, int(limit)) :]
+            else:
+                stmt = stmt.order_by(Candle.timestamp_ms.desc()).limit(int(limit))
+                rows = list(session.execute(stmt).scalars().all())
+                rows.reverse()
 
             return [
                 [

@@ -48,6 +48,7 @@ def create_strategy_scorecard_panel(terminal):
     terminal.strategy_table.setHorizontalHeaderLabels(STRATEGY_SCORECARD_HEADERS)
     dock.setWidget(terminal.strategy_table)
     terminal.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    dock.hide()
     return dock
 
 
@@ -60,6 +61,7 @@ def create_strategy_debug_panel(terminal):
     terminal.debug_table.setHorizontalHeaderLabels(STRATEGY_DEBUG_HEADERS)
     dock.setWidget(terminal.debug_table)
     terminal.addDockWidget(Qt.RightDockWidgetArea, dock)
+    dock.hide()
     return dock
 
 
