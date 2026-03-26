@@ -13244,6 +13244,30 @@ def _hotfix_test_openai_from_settings(self, window=None):
         window._settings_openai_test_task = asyncio.create_task(runner)
 
 
+def _hotfix_wrap_tab_in_scroll_area(content, minimum_width=0):
+    if isinstance(content, QScrollArea):
+        return content
+
+    content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    holder = QWidget()
+    holder_layout = QVBoxLayout(holder)
+    holder_layout.setContentsMargins(0, 0, 0, 0)
+    holder_layout.setSpacing(0)
+    holder_layout.addWidget(content)
+    holder_layout.addStretch(1)
+    if minimum_width:
+        holder.setMinimumWidth(int(minimum_width))
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+    scroll.setWidget(holder)
+    return scroll
+
+
 def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False):
     if not isinstance(values, dict):
         return
@@ -13575,7 +13599,7 @@ def _hotfix_show_settings_window(self):
         general_form.addRow("Initial capital", initial_capital)
         general_form.addRow("Terminal refresh (ms)", refresh_ms)
         general_form.addRow("Orderbook refresh (ms)", orderbook_ms)
-        tabs.addTab(general_tab, "General")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(general_tab, minimum_width=600), "General")
 
         storage_tab = QWidget()
         storage_form = QFormLayout(storage_tab)
@@ -13592,7 +13616,7 @@ def _hotfix_show_settings_window(self):
         storage_form.addRow("Database backend", database_mode)
         storage_form.addRow("Remote database URL", database_url)
         storage_form.addRow("", database_hint)
-        tabs.addTab(storage_tab, "Storage")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(storage_tab, minimum_width=600), "Storage")
 
         display_tab = QWidget()
         display_form = QFormLayout(display_tab)
@@ -13665,7 +13689,7 @@ def _hotfix_show_settings_window(self):
         display_form.addRow("Grid color", chart_grid_btn)
         display_form.addRow("Bullish candle color", up_color_btn)
         display_form.addRow("Bearish candle color", down_color_btn)
-        tabs.addTab(display_tab, "Display")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(display_tab, minimum_width=600), "Display")
 
         risk_tab = QWidget()
         risk_form = QFormLayout(risk_tab)
@@ -13716,7 +13740,7 @@ def _hotfix_show_settings_window(self):
         risk_form.addRow("Max gross exposure", max_gross)
         risk_form.addRow("Closeout guard", margin_closeout_guard)
         risk_form.addRow("Closeout block threshold", margin_closeout_pct)
-        tabs.addTab(risk_tab, "Risk")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(risk_tab, minimum_width=600), "Risk")
 
         strategy_tab = QWidget()
         strategy_form = QFormLayout(strategy_tab)
@@ -13779,7 +13803,7 @@ def _hotfix_show_settings_window(self):
         strategy_form.addRow("Breakout lookback", strategy_breakout)
         strategy_form.addRow("AI min confidence", strategy_confidence)
         strategy_form.addRow("Signal amount", strategy_amount)
-        tabs.addTab(strategy_tab, "Strategy")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(strategy_tab, minimum_width=600), "Strategy")
 
         integrations_tab = QWidget()
         integrations_form = QFormLayout(integrations_tab)
@@ -13838,7 +13862,7 @@ def _hotfix_show_settings_window(self):
         integrations_form.addRow("Trade from news bias", news_autotrade)
         integrations_form.addRow("Draw news on chart", news_chart)
         integrations_form.addRow("News feed URL", news_feed_url)
-        tabs.addTab(integrations_tab, "Integrations")
+        tabs.addTab(_hotfix_wrap_tab_in_scroll_area(integrations_tab, minimum_width=600), "Integrations")
 
         summary = QLabel("-")
         summary.setWordWrap(True)

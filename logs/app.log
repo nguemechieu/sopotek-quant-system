@@ -615,3 +615,786 @@ Using polling market data for Oanda
 Initializing broker oanda
 Broker ready exchange=oanda type=forex symbols=50 (raw=68 filtered=68)
 Using polling market data for Oanda
+OANDA is temporarily unreachable for HKD_JPY. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable (Network connection failed while connecting to Oanda: Cannot connect to host api-fxtrade.oanda.com:443 ssl:default [The semaphore timeout period has expired]). The app will keep retrying automatically.
+OANDA is temporarily unreachable for CHF_ZAR. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for ZAR_JPY. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_CHF. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_CHF. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for USD_MXN. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for GBP_USD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for GBP_ZAR. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for SGD_JPY. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_HKD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_SGD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_NZD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for USD_CAD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for SGD_CHF. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for USD_PLN. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for GBP_AUD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_NZD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_DKK. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_USD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_GBP. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_ZAR. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for AUD_JPY. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_USD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_JPY. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for GBP_NZD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for GBP_SGD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for USD_SEK. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_SGD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for USD_HKD. Using cached ticker data while the connection recovers.
+OANDA is temporarily unreachable for EUR_PLN. Using cached ticker data while the connection recovers.
+Initializing broker coinbase
+Requested market preference derivative was not available on coinbase; falling back to auto symbols
+Broker ready exchange=coinbase type=crypto symbols=0 (raw=893 filtered=0)
+Requested market preference derivative was not available on coinbase; falling back to auto symbols
+Not enough data for ALLO/USDC (1h): received 238 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+WebSocket market data enabled for coinbase
+Not enough data for 00/USD (1h): received 79 of 180 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for 00/USDC (1h): received 79 of 180 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for 00/USD (1h): received 151 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALLO/USDC (1m): received 22 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for 1INCH/USD (1h): received 243 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALLO/USDC (5m): received 114 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALLO/USDC (15m): received 187 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ADA/USDT (1h): received 282 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALLO/USDC (30m): received 208 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALLO/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ALLO/USDC (1d): received 135 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (1h): received 206 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (1m): received 14 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (5m): received 41 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (15m): received 81 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (30m): received 136 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ALT/USDC (1h): received 206 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USDC (1m): received 15 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USDC (5m): received 42 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USDC (15m): received 82 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USDC (30m): received 137 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ALT/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for AMP/USD (1h): received 235 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USD (1m): received 21 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USD (5m): received 88 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USD (15m): received 153 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ADA/USDT (1h): received 283 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USD (30m): received 206 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for AMP/USDC (1h): received 235 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USDC (1m): received 21 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USDC (5m): received 88 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USDC (15m): received 153 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USDC (30m): received 206 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AMP/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ANKR/EUR (1h): received 196 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/EUR (1m): received 8 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/EUR (5m): received 19 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/EUR (15m): received 65 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/EUR (30m): received 145 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/EUR (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ANKR/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ANKR/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APE/EUR (1h): received 148 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/EUR (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APE/USD (1h): received 219 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APE/USDC (1h): received 219 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APE/USDT (1h): received 75 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDT (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ALGO/BTC (1h): received 136 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/USD (1h): received 299 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 255, in execute
+    return await self.market(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 161, in market
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type=order.get("type", "market"))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1948, in create_order
+    raise NotSupported(self.id + ' createOrder() only stop limit orders are supported')
+ccxt.base.errors.NotSupported: coinbase createOrder() only stop limit orders are supported
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 255, in execute
+    return await self.market(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 161, in market
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type=order.get("type", "market"))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1948, in create_order
+    raise NotSupported(self.id + ' createOrder() only stop limit orders are supported')
+ccxt.base.errors.NotSupported: coinbase createOrder() only stop limit orders are supported
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1991, in create_order
+    raise BadRequest(self.id + ' createOrder() has failed, check your arguments and parameters')
+ccxt.base.errors.BadRequest: coinbase createOrder() has failed, check your arguments and parameters
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1991, in create_order
+    raise BadRequest(self.id + ' createOrder() has failed, check your arguments and parameters')
+ccxt.base.errors.BadRequest: coinbase createOrder() has failed, check your arguments and parameters
+Requested market preference derivative was not available on coinbase; falling back to auto symbols
+Not enough data for ANKR/USD (1h): received 299 of 1000 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDT (1m): received 2 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDT (5m): received 9 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDT (15m): received 30 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APE/USDT (30m): received 46 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ANKR/USD (1h): received 299 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (1h): received 202 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for ASM/USD (1h): received 287 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (1m): received 26 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (5m): received 61 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (15m): received 104 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (30m): received 142 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for API3/USDC (1h): received 202 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USDC (1m): received 26 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USDC (5m): received 61 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USDC (15m): received 103 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USDC (30m): received 142 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for API3/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APR/USD (1m): received 50 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USD (5m): received 157 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USD (15m): received 226 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APR/USD (1d): received 155 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USDC (1m): received 49 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USDC (5m): received 157 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USDC (15m): received 226 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APR/USDC (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for APR/USDC (1d): received 155 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APT/USD (1m): received 203 of 240 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for APT/USD (4h): no candles were returned. Try another timeframe, load more history, or wait for more market data.
+Not enough data for ATOM/USDT (1h): received 216 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Not enough data for AURORA/USD (1h): received 210 of 500 requested candles. Indicators, AI signals, and backtests may be limited.
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1913, in create_order
+    triggerPrice = self.price_to_precision(symbol, stopLossPrice)
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\base\exchange.py", line 2015, in price_to_precision
+    raise ArgumentsRequired(self.id + ' price of ' + market['symbol'] + ' must be greater than minimum price precision of ' + self.number_to_string(market['precision']['price']))
+ccxt.base.errors.ArgumentsRequired: coinbase price of AAVE/USD must be greater than minimum price precision of 0.01
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1991, in create_order
+    raise BadRequest(self.id + ' createOrder() has failed, check your arguments and parameters')
+ccxt.base.errors.BadRequest: coinbase createOrder() has failed, check your arguments and parameters
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 255, in execute
+    return await self.market(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 161, in market
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type=order.get("type", "market"))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1948, in create_order
+    raise NotSupported(self.id + ' createOrder() only stop limit orders are supported')
+ccxt.base.errors.NotSupported: coinbase createOrder() only stop limit orders are supported
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 255, in execute
+    return await self.market(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 161, in market
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type=order.get("type", "market"))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1948, in create_order
+    raise NotSupported(self.id + ' createOrder() only stop limit orders are supported')
+ccxt.base.errors.NotSupported: coinbase createOrder() only stop limit orders are supported
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1991, in create_order
+    raise BadRequest(self.id + ' createOrder() has failed, check your arguments and parameters')
+ccxt.base.errors.BadRequest: coinbase createOrder() has failed, check your arguments and parameters
+Manual order failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 6007, in _submit_manual_trade
+    order = await self.controller.submit_trade_with_preflight(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 2553, in submit_trade_with_preflight
+    order = await execution_manager.execute(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<12 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\execution_manager.py", line 746, in execute
+    execution = await self.router.route(prepared_order)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\order_router.py", line 12, in route
+    return await self.smart_execution.execute(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 257, in execute
+    return await self.limit(order)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 165, in limit
+    child = await self._submit_child(order, amount=order["amount"], price=order.get("price"), order_type="limit")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\execution\smart_execution.py", line 39, in _submit_child
+    return await self.broker.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        **create_kwargs,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1991, in create_order
+    raise BadRequest(self.id + ' createOrder() has failed, check your arguments and parameters')
+ccxt.base.errors.BadRequest: coinbase createOrder() has failed, check your arguments and parameters
+Close-position request failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 3301, in _close_position_async
+    result = await controller.close_market_chat_position(symbol, amount=amount, position=position)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 4264, in close_market_chat_position
+    result = await broker.close_position(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\base_broker.py", line 191, in close_position
+    return await self.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1970, in create_order
+    'base_size': self.amount_to_precision(symbol, amount),
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\base\exchange.py", line 2022, in amount_to_precision
+    raise ArgumentsRequired(self.id + ' amount of ' + market['symbol'] + ' must be greater than minimum amount precision of ' + self.number_to_string(market['precision']['amount']))
+ccxt.base.errors.ArgumentsRequired: coinbase amount of XTZ/USD must be greater than minimum amount precision of 0.01
+Close-position request failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\terminal.py", line 3301, in _close_position_async
+    result = await controller.close_market_chat_position(symbol, amount=amount, position=position)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\app_controller.py", line 4264, in close_market_chat_position
+    result = await broker.close_position(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\base_broker.py", line 191, in close_position
+    return await self.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1970, in create_order
+    'base_size': self.amount_to_precision(symbol, amount),
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\base\exchange.py", line 2022, in amount_to_precision
+    raise ArgumentsRequired(self.id + ' amount of ' + market['symbol'] + ' must be greater than minimum amount precision of ' + self.number_to_string(market['precision']['amount']))
+ccxt.base.errors.ArgumentsRequired: coinbase amount of XTZ/USD must be greater than minimum amount precision of 0.01
+Close-all positions failed
+Traceback (most recent call last):
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\frontend\ui\actions\trading_actions.py", line 99, in close_all_positions_async
+    results = await broker.close_all_positions()
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\base_broker.py", line 212, in close_all_positions
+    result = await self.close_position(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\base_broker.py", line 191, in close_position
+    return await self.create_order(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\nguem\Documents\GitHub\sopotek-trading-ai\src\broker\ccxt_broker.py", line 1276, in create_order
+    created = await self.exchange.create_order(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\coinbase.py", line 1970, in create_order
+    'base_size': self.amount_to_precision(symbol, amount),
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\nguem\AppData\Roaming\Python\Python314\site-packages\ccxt\async_support\base\exchange.py", line 2022, in amount_to_precision
+    raise ArgumentsRequired(self.id + ' amount of ' + market['symbol'] + ' must be greater than minimum amount precision of ' + self.number_to_string(market['precision']['amount']))
+ccxt.base.errors.ArgumentsRequired: coinbase amount of CELO/USD must be greater than minimum amount precision of 0.01
+Requested market preference derivative was not available on coinbase; falling back to auto symbols
+Initializing broker oanda
+Broker ready exchange=oanda type=forex symbols=50 (raw=68 filtered=68)
+Using polling market data for Oanda
+Skipping GBP_USD buy due to conflicting news bias (sell -0.424)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.424)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.423)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.422)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.421)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.421)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.421)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.421)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.420)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.429)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.428)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.427)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.426)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.425)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.425)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.415)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.414)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.413)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.412)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.411)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.410)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Skipping GBP_USD buy due to conflicting news bias (sell -0.409)
+Initializing broker oanda
+Broker ready exchange=oanda type=forex symbols=50 (raw=68 filtered=68)
+Using polling market data for Oanda

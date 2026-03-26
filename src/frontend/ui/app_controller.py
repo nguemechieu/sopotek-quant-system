@@ -7831,11 +7831,11 @@ class AppController(QMainWindow):
         if ask <= 0:
             ask = bid * 1.001
 
-        bids = [[bid * (1 - (i * 0.0005)), max(1.0, 10 - i)] for i in range(min(limit, 10))]
-        asks = [[ask * (1 + (i * 0.0005)), max(1.0, 10 - i)] for i in range(min(limit, 10))]
+        bids = [[bid * (1 - (i * 0.0005)), max(1.0, 100 - i)] for i in range(min(limit, 100))]
+        asks = [[ask * (1 + (i * 0.0005)), max(1.0, 100 - i)] for i in range(min(limit, 100))]
         return {"bids": bids, "asks": asks}
 
-    async def request_orderbook(self, symbol, limit=20):
+    async def request_orderbook(self, symbol, limit=100):
         if not symbol:
             return
 
