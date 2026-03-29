@@ -1938,7 +1938,7 @@ class SopotekTrading:
     # STOP SYSTEM
     # ==========================================
 
-    async def stop(self):
+    async def stop(self, wait_for_background_workers=False):
 
         self.logger.info("Stopping trading system")
 
@@ -1972,4 +1972,4 @@ class SopotekTrading:
             except Exception:
                 self.logger.exception("Execution manager stop failed")
 
-        self._shutdown_signal_selection_executor()
+        self._shutdown_signal_selection_executor(wait=wait_for_background_workers)

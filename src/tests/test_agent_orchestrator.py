@@ -616,3 +616,16 @@ def test_signal_agent_process_supports_async_selectors():
     assert result["signal"]["side"] == "buy"
     assert result["signal"]["strategy_name"] == "Trend Following"
     assert result["assigned_strategies"] == [{"strategy_name": "Trend Following", "timeframe": "1h"}]
+
+
+def test_sopotek_trading_stop_can_wait_for_signal_executor_shutdown():
+    trading = SopotekTrading(controller=_controller())
+    waits = []
+    trading.orchestrator = None
+    trading.event_driven_runtime = None
+    trading.execution_manager = None
+    trading._shutdown_signal_selection_executor = lambda wait=False: waits.append(wait)
+
+    asyncio.run(trading.stop(wait_for_background_workers=True))
+
+    assert waits == [True]

@@ -9186,79 +9186,123 @@ class AppController(QMainWindow):
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _cleanup_session(self, stop_trading=True, close_broker=False):
+    async def _cleanup_session(self, stop_trading=True, close_broker=False, wait_for_background_workers=False):
         self._session_closing = True
+        async def _await_cleanup_step(label, coro):
+            try:
+                return await coro
+            except Exception:
+                self.logger.exception("Cleanup step failed: %s", label)
+                return None
+
+        def _run_cleanup_step(label, func):
+            try:
+                return func()
+            except Exception:
+                self.logger.exception("Cleanup step failed: %s", label)
+                return None
+
         try:
-            await self._stop_telegram_service()
-            await self.news_service.close()
-            self._news_cache.clear()
-            self._news_inflight.clear()
+            stop_telegram_service = getattr(self, "_stop_telegram_service", None)
+            if callable(stop_telegram_service):
+                await _await_cleanup_step("stop telegram service", stop_telegram_service())
+
+            news_service = getattr(self, "news_service", None)
+            close_news_service = getattr(news_service, "close", None) if news_service is not None else None
+            if callable(close_news_service):
+                await _await_cleanup_step("close news service", close_news_service())
+
+            news_cache = getattr(self, "_news_cache", None)
+            if news_cache is not None and hasattr(news_cache, "clear"):
+                _run_cleanup_step("clear news cache", news_cache.clear)
+
+            news_inflight = getattr(self, "_news_inflight", None)
+            if news_inflight is not None and hasattr(news_inflight, "clear"):
+                _run_cleanup_step("clear in-flight news requests", news_inflight.clear)
 
             auto_assignment_task = getattr(self, "_strategy_auto_assignment_task", None)
             if auto_assignment_task is not None and not auto_assignment_task.done():
-                auto_assignment_task.cancel()
+                _run_cleanup_step("cancel strategy auto-assignment task", auto_assignment_task.cancel)
             self._strategy_auto_assignment_task = None
+
             deferred_assignment_task = getattr(self, "_strategy_auto_assignment_deferred_task", None)
             if deferred_assignment_task is not None and not deferred_assignment_task.done():
-                deferred_assignment_task.cancel()
+                _run_cleanup_step("cancel deferred strategy auto-assignment task", deferred_assignment_task.cancel)
             self._strategy_auto_assignment_deferred_task = None
-            self._shutdown_strategy_ranking_executor()
-            terminal_restore_task = getattr(self, "_terminal_runtime_restore_task", None)
-            if terminal_restore_task is not None and not terminal_restore_task.done():
-                terminal_restore_task.cancel()
-            self._terminal_runtime_restore_task = None
-            self.strategy_auto_assignment_in_progress = False
-            self.strategy_auto_assignment_ready = not bool(getattr(self, "strategy_auto_assignment_enabled", True))
-            self._update_strategy_auto_assignment_progress(
-                completed=0,
-                total=0,
-                current_symbol="",
-                timeframe=str(getattr(self, "time_frame", "1h") or "1h"),
-                message="Waiting to scan symbols.",
-                failed_symbols=[],
+
+            _run_cleanup_step(
+                "shutdown strategy ranking executor",
+                lambda: self._shutdown_strategy_ranking_executor(wait=wait_for_background_workers),
             )
 
-            if self._ticker_task and not self._ticker_task.done():
-                self._ticker_task.cancel()
+            terminal_restore_task = getattr(self, "_terminal_runtime_restore_task", None)
+            if terminal_restore_task is not None and not terminal_restore_task.done():
+                _run_cleanup_step("cancel terminal runtime restore task", terminal_restore_task.cancel)
+            self._terminal_runtime_restore_task = None
+
+            self.strategy_auto_assignment_in_progress = False
+            self.strategy_auto_assignment_ready = not bool(getattr(self, "strategy_auto_assignment_enabled", True))
+            _run_cleanup_step(
+                "reset strategy auto-assignment progress",
+                lambda: self._update_strategy_auto_assignment_progress(
+                    completed=0,
+                    total=0,
+                    current_symbol="",
+                    timeframe=str(getattr(self, "time_frame", "1h") or "1h"),
+                    message="Waiting to scan symbols.",
+                    failed_symbols=[],
+                ),
+            )
+
+            ticker_task = getattr(self, "_ticker_task", None)
+            if ticker_task is not None and not ticker_task.done():
+                _run_cleanup_step("cancel ticker task", ticker_task.cancel)
             self._ticker_task = None
 
-            if self._ws_task and not self._ws_task.done():
-                self._ws_task.cancel()
+            ws_task = getattr(self, "_ws_task", None)
+            if ws_task is not None and not ws_task.done():
+                _run_cleanup_step("cancel websocket task", ws_task.cancel)
             self._ws_task = None
 
-            if self._ws_bus_task and not self._ws_bus_task.done():
-                self._ws_bus_task.cancel()
+            ws_bus_task = getattr(self, "_ws_bus_task", None)
+            if ws_bus_task is not None and not ws_bus_task.done():
+                _run_cleanup_step("cancel websocket bus task", ws_bus_task.cancel)
             self._ws_bus_task = None
             self.ws_bus = None
             self.ws_manager = None
 
-            if stop_trading and self.trading_system:
-                await self.trading_system.stop()
+            trading_system = getattr(self, "trading_system", None)
+            if stop_trading and trading_system is not None:
+                try:
+                    await _await_cleanup_step(
+                        "stop trading system",
+                        trading_system.stop(wait_for_background_workers=wait_for_background_workers),
+                    )
+                except TypeError:
+                    await _await_cleanup_step("stop trading system", trading_system.stop())
                 self.trading_system = None
                 self.behavior_guard = None
                 self._live_agent_decision_events = {}
                 self._live_agent_runtime_feed = []
 
-            if self.terminal:
-                try:
-                    self.terminal._ui_shutting_down = True
-                except Exception:
-                    pass
-                try:
-                    if hasattr(self.terminal, "_disconnect_controller_signals"):
-                        self.terminal._disconnect_controller_signals()
-                except Exception:
-                    pass
-                self.stack.removeWidget(self.terminal)
-                self.terminal.deleteLater()
+            terminal = getattr(self, "terminal", None)
+            if terminal is not None:
+                _run_cleanup_step("mark terminal as shutting down", lambda: setattr(terminal, "_ui_shutting_down", True))
+                disconnect_signals = getattr(terminal, "_disconnect_controller_signals", None)
+                if callable(disconnect_signals):
+                    _run_cleanup_step("disconnect terminal controller signals", disconnect_signals)
+                stack = getattr(self, "stack", None)
+                if stack is not None and hasattr(stack, "removeWidget"):
+                    _run_cleanup_step("remove terminal widget", lambda: stack.removeWidget(terminal))
+                _run_cleanup_step("schedule terminal deletion", terminal.deleteLater)
                 self.terminal = None
 
-            if close_broker and self.broker:
-                await self.broker.close()
+            broker = getattr(self, "broker", None)
+            if close_broker and broker is not None:
+                close_broker_coro = getattr(broker, "close", None)
+                if callable(close_broker_coro):
+                    await _await_cleanup_step("close broker", close_broker_coro())
                 self.broker = None
-
-        except Exception as e:
-            self.logger.error("Cleanup error: %s", e)
         finally:
             self._session_closing = False
 
@@ -9284,7 +9328,11 @@ class AppController(QMainWindow):
     async def shutdown_for_exit(self):
         trading_system = getattr(self, "trading_system", None)
         try:
-            await self._cleanup_session(stop_trading=True, close_broker=True)
+            await self._cleanup_session(
+                stop_trading=True,
+                close_broker=True,
+                wait_for_background_workers=True,
+            )
         except Exception:
             self.logger.exception("Exit cleanup failed")
         finally:
