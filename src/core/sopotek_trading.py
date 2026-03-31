@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import time
@@ -30,8 +31,10 @@ from quant.data_hub import QuantDataHub
 from quant.portfolio_allocator import PortfolioAllocator
 from quant.portfolio_risk_engine import PortfolioRiskEngine
 from quant.signal_engine import SignalEngine
+from paper_learning import PaperTradeDatasetBuilder, PaperTradingLearningService
 from reasoning import HeuristicReasoningProvider, OpenAIReasoningProvider, ReasoningEngine
 from risk.trader_behavior_guard import TraderBehaviorGuard
+from storage.paper_trade_learning_repository import PaperTradeLearningRepository
 
 
 class SopotekTrading:
@@ -101,6 +104,16 @@ class SopotekTrading:
             trade_repository=getattr(controller, "trade_repository", None),
             trade_notifier=getattr(controller, "handle_trade_execution", None),
             behavior_guard=self.behavior_guard,
+        )
+        self.paper_trade_learning_repository = PaperTradeLearningRepository()
+        self.paper_trade_dataset_builder = PaperTradeDatasetBuilder(
+            repository=self.paper_trade_learning_repository
+        )
+        self.paper_trade_learning_service = PaperTradingLearningService(
+            event_bus=self.event_bus,
+            repository=self.paper_trade_learning_repository,
+            exchange_resolver=self._active_exchange_code,
+            tracked_sources={"bot"},
         )
 
         self.risk_engine = None
@@ -196,6 +209,9 @@ class SopotekTrading:
             self.controller.signal_consensus_agent = self.signal_consensus_agent
             self.controller.signal_aggregation_agent = self.signal_aggregation_agent
             self.controller.reasoning_engine = self.reasoning_engine
+            self.controller.paper_trade_learning_repository = self.paper_trade_learning_repository
+            self.controller.paper_trade_dataset_builder = self.paper_trade_dataset_builder
+            self.controller.paper_trade_learning_service = self.paper_trade_learning_service
 
         self.bind_agent_decision_repository(getattr(self.controller, "agent_decision_repository", None))
         self.logger.info("Sopotek Trading System initialized")
@@ -967,8 +983,12 @@ class SopotekTrading:
         return review
 
     def _custom_process_signal_handler(self):
-        handler = self.__dict__.get("process_signal")
-        return handler if callable(handler) else None
+        handler = getattr(self, "process_signal", None)
+        if not callable(handler):
+            return None
+        if handler == SopotekTrading.process_signal:
+            return None
+        return handler
 
     async def _run_signal_agents(self, context):
         working = dict(context or {})
@@ -1386,7 +1406,18 @@ class SopotekTrading:
                         signal=display_signal if isinstance(display_signal, dict) else None,
                     )
                 return None
-            result = await custom_handler(normalized_symbol, signal, dataset=dataset)
+            try:
+                result = custom_handler(
+                    normalized_symbol,
+                    signal,
+                    dataset=dataset,
+                    timeframe=target_timeframe,
+                )
+            except TypeError:
+                result = custom_handler(normalized_symbol, signal, dataset=dataset)
+
+            if inspect.isawaitable(result):
+                result = await result
         else:
             context = await self.event_driven_runtime.process_market_data(context)
             signal = context.get("signal")
@@ -1856,8 +1887,16 @@ class SopotekTrading:
             "amount": review.get("amount"),
             "price": review.get("price"),
             "source": "bot",
+            "exchange": self._active_exchange_code(),
             "strategy_name": review.get("strategy_name"),
             "timeframe": review.get("timeframe"),
+            "decision_id": review.get("decision_id") or signal.get("decision_id"),
+            "signal_timestamp": signal.get("timestamp"),
+            "feature_snapshot": signal.get("feature_snapshot"),
+            "feature_version": signal.get("feature_version"),
+            "regime_snapshot": review.get("regime_snapshot"),
+            "market_regime": (review.get("regime_snapshot") or {}).get("regime"),
+            "volatility_regime": (review.get("regime_snapshot") or {}).get("volatility"),
             "signal_source_agent": review.get("signal_source_agent"),
             "consensus_status": review.get("consensus_status"),
             "adaptive_weight": review.get("adaptive_weight"),

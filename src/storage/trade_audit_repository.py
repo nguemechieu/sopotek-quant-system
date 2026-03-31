@@ -81,7 +81,7 @@ class TradeAuditRepository:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
         text = str(value or "").strip()
         if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
+            text = f"{text[:-1]}+00:00"
         try:
             parsed = datetime.fromisoformat(text)
         except ValueError:

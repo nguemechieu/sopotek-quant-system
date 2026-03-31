@@ -37,7 +37,8 @@ class BrokerConfig(BaseModel):
     timeout: int = 30000
     options: dict = Field(default_factory=dict)
     params: dict = Field(default_factory=dict)
-    close: float = Field( default=None,
+    close: Optional[float] = Field(
+        default=None,
         description="Close broker"
     )
 
@@ -117,10 +118,9 @@ config = AppConfig(
 
     system=SystemConfig(
         limit=50000,
-        rate_limit=30
+        rate_limit=30,
+        timeframe="1h"
     ),
 
     strategy="LSTM",
-
-    time_frame="1h"
 )

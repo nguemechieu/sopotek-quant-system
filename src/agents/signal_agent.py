@@ -59,7 +59,10 @@ class SignalAgent(BaseAgent):
             working["assigned_strategies"] = list(assigned_strategies or [])
 
         if signal is not None and callable(self.news_bias_applier):
-            signal = await self.news_bias_applier(symbol, signal)
+            bias_result = self.news_bias_applier(symbol, signal)
+            if inspect.isawaitable(bias_result):
+                bias_result = await bias_result
+            signal = bias_result
             if not signal:
                 working["blocked_by_news_bias"] = True
                 working["news_bias_reason"] = "Signal was neutralized by news bias controls."
@@ -93,8 +96,9 @@ class SignalAgent(BaseAgent):
             return working
 
         if self.candidate_mode:
-            signal_candidate = dict(signal)
-            signal_candidate.setdefault("timeframe", working.get("timeframe"))
+            signal_candidate = signal.copy() if isinstance(signal, dict) else {"value": signal}
+            if isinstance(signal_candidate, dict):
+                signal_candidate.setdefault("timeframe", working.get("timeframe"))
             working.setdefault("signal_candidates", []).append(
                 {
                     "agent_name": self.name,
@@ -125,14 +129,15 @@ class SignalAgent(BaseAgent):
             )
             return working
 
+        signal_mapping = signal if isinstance(signal, dict) else {}
         self.remember(
             "selected",
             {
-                "strategy_name": signal.get("strategy_name"),
+                "strategy_name": signal_mapping.get("strategy_name"),
                 "timeframe": working.get("timeframe"),
-                "side": signal.get("side"),
-                "confidence": signal.get("confidence"),
-                "reason": signal.get("reason"),
+                "side": signal_mapping.get("side"),
+                "confidence": signal_mapping.get("confidence"),
+                "reason": signal_mapping.get("reason"),
                 "assigned_count": len(working["assigned_strategies"]),
             },
             symbol=symbol,

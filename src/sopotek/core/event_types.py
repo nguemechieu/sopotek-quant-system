@@ -1,4 +1,12 @@
 class EventType:
+    """Defines the set of event type identifiers used across the trading system.
+    Provides a centralized list of string constants to categorize and route events.
+
+    The event types represent key stages of the trading lifecycle such as market
+    data ingestion, signal generation, risk checks, order handling, and execution
+    reporting. Use these constants to ensure consistent event naming and to avoid
+    hard-coded string literals throughout the codebase."""
+    
     MARKET_DATA = "MARKET_DATA"
     MARKET_TICK = "MARKET_TICK"
     CANDLE = "CANDLE"
@@ -16,6 +24,9 @@ class EventType:
     ORDER_FILLED = "ORDER_FILLED"
     EXECUTION_REPORT = "EXECUTION_REPORT"
     FILL = "FILL"
+    PAPER_TRADE_EVENT = "PAPER_TRADE_EVENT"
+    PAPER_TRADE_RECORDED = "PAPER_TRADE_RECORDED"
+    PAPER_DATASET_READY = "PAPER_DATASET_READY"
     POSITION = "POSITION"
     REGIME = "REGIME"
     PORTFOLIO_SNAPSHOT = "PORTFOLIO_SNAPSHOT"

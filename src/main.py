@@ -1,9 +1,11 @@
 """Desktop entrypoint for the Sopotek Trading AI application."""
+
 # cspell:words qasync sopotek timerid getpid gaierror clientconnectordnserror
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import faulthandler
 import importlib
 import os
@@ -75,21 +77,25 @@ def _install_faulthandler() -> None:
         return
 
     try:
-        log_dir = _src_root() / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        stream: os.TextIOWrapper[_WrappedBuffer] = (log_dir / "native_crash.log").open(  # pylint: disable=consider-using-with
-            "a",
-            encoding="utf-8",
-            buffering=1,
-        )
-        stream.write(f"\n=== Native crash trace session pid={os.getpid()} ===\n")
-        faulthandler.enable(file=stream, all_threads=True)
-        _FAULTHANDLER_STATE["stream"] = stream
+        _setup_faulthandler_file_logging()
     except (OSError, RuntimeError, ValueError):
         try:
             faulthandler.enable(all_threads=True)
         except (OSError, RuntimeError, ValueError):
             return
+
+
+def _setup_faulthandler_file_logging():
+    log_dir = _src_root() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stream: os.TextIOWrapper[_WrappedBuffer] = (log_dir / "native_crash.log").open(  # pylint: disable=consider-using-with
+        "a",
+        encoding="utf-8",
+        buffering=1,
+    )
+    stream.write(f"\n=== Native crash trace session pid={os.getpid()} ===\n")
+    faulthandler.enable(file=stream, all_threads=True)
+    _FAULTHANDLER_STATE["stream"] = stream
 
 
 def _is_dns_resolution_noise(context: dict[str, Any] | None) -> bool:
@@ -181,17 +187,17 @@ def _is_qt_windows_noise(message: str | None) -> bool:
     bool
         True if the message is known harmless noise, False otherwise.
     """
-    text = str(message or "").strip()
-    if not text:
-        return False
-    return any(
-        token in text
-        for token in (
-            "External WM_DESTROY received for",
-            "QWindowsWindow::setGeometry: Unable to set geometry",
-            "OpenThemeData() failed for theme 15 (WINDOW).",
+    if text := str(message or "").strip():
+        return any(
+            token in text
+            for token in (
+                "External WM_DESTROY received for",
+                "QWindowsWindow::setGeometry: Unable to set geometry",
+                "OpenThemeData() failed for theme 15 (WINDOW).",
+            )
         )
-    )
+    else:
+        return False
 
 
 def _install_qt_message_filter() -> None:
@@ -252,29 +258,16 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             shutdown_coro = getattr(window, "shutdown_for_exit", None)
             if callable(shutdown_coro):
-                try:
+                with contextlib.suppress(KeyboardInterrupt, RuntimeError):
                     loop.run_until_complete(shutdown_coro())
-                except KeyboardInterrupt:
-                    pass
-                except RuntimeError:
-                    pass
             shutdown_asyncgens = getattr(loop, "shutdown_asyncgens", None)
             if callable(shutdown_asyncgens):
-                try:
+                with contextlib.suppress(KeyboardInterrupt, RuntimeError):
                     loop.run_until_complete(shutdown_asyncgens())
-                except KeyboardInterrupt:
-                    pass
-                except RuntimeError:
-                    pass
             shutdown_default_executor = getattr(loop, "shutdown_default_executor", None)
             if callable(shutdown_default_executor):
-                try:
+                with contextlib.suppress(KeyboardInterrupt, RuntimeError):
                     loop.run_until_complete(shutdown_default_executor())
-                except KeyboardInterrupt:
-                    pass
-                except RuntimeError:
-                    pass
-
     return 0
 
 

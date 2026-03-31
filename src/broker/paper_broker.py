@@ -17,6 +17,7 @@ class PaperBroker(BaseBroker, ABC):
         self.controller = controller
         self.config = controller
         self.logger = getattr(controller, "logger", None) or logging.getLogger("PaperBroker")
+        self.exchange_name = "paper"
 
         self.balance = getattr(controller, "paper_balance", None)
         if self.balance is None:

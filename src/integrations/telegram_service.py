@@ -229,7 +229,7 @@ class TelegramService:
         if command in {"/history", "/journalsummary"}:
             summary_builder = getattr(self.controller, "market_chat_trade_history_summary", None)
             if callable(summary_builder):
-                await self.send_message(await summary_builder(limit=300, open_window=True))
+                await self.send_message( summary_builder(limit=300, open_window=True))
             else:
                 await self.send_message("Trade history summary is not available right now.")
             return

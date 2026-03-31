@@ -202,6 +202,24 @@ def test_execute_scales_buy_order_to_available_quote_balance():
     assert order["amount"] == 2.45
 
 
+def test_execute_skips_inventory_balance_checks_for_oanda_fx_orders():
+    broker = MockBroker(
+        balance={"free": {"USD": 5000.0}, "currency": "USD"},
+        markets={"AUD/CAD": {"active": True, "otc": True}},
+    )
+    broker.exchange_name = "oanda"
+    bus = EventBus()
+    manager = ExecutionManager(broker, bus, OrderRouter(broker))
+
+    order = asyncio.run(
+        manager.execute(symbol="AUD/CAD", side="buy", amount=1000, price=0.9050, exchange="oanda")
+    )
+
+    assert order["symbol"] == "AUD/CAD"
+    assert order["amount"] == 1000
+    assert broker.orders[0]["symbol"] == "AUD/CAD"
+
+
 def test_execute_skips_inactive_market():
     broker = MockBroker(
         balance={"free": {"USDT": 1000}},

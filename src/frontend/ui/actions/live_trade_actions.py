@@ -128,6 +128,10 @@ async def submit_manual_trade(
             timeframe=str(getattr(terminal, "current_timeframe", "") or ""),
         )
         status_text = str(order.get("status") or "submitted").replace("_", " ").upper()
+        final_symbol = str(order.get("symbol") or symbol or "").strip().upper() or str(symbol or "").strip().upper()
+        final_side = str(order.get("side") or side or "").strip().upper() or str(side or "").strip().upper()
+        final_type = str(order.get("type") or order_type or "").strip().replace("_", " ").upper()
+        final_display_mode = str(order.get("requested_quantity_mode") or display_mode or "units").strip() or "units"
         display_amount = order.get(
             "applied_requested_mode_amount",
             requested_display_amount,
@@ -138,27 +142,40 @@ async def submit_manual_trade(
         )
         sizing_summary = str(order.get("sizing_summary") or "").strip()
         ai_sizing_reason = str(order.get("ai_sizing_reason") or "").strip()
+        review_summary = str(order.get("intervention_summary") or order.get("review_reason") or "").strip()
+        review_prefix = (
+            "Risk watch"
+            if bool(order.get("risk_monitoring_active")) and not bool(order.get("intervention_pending"))
+            else "Auto-review"
+        )
         requested_suffix = (
-            f" | requested {requested_display_amount} {display_mode}"
+            f" | requested {requested_display_amount} {final_display_mode}"
             if bool(order.get("size_adjusted"))
             else ""
         )
         sizing_suffix = f" | {sizing_summary}" if sizing_summary else ""
         ai_suffix = f" | ChatGPT size note: {ai_sizing_reason}" if ai_sizing_reason else ""
+        review_suffix = f" | {review_prefix}: {review_summary}" if review_summary else ""
         terminal.system_console.log(
             (
-                f"Manual order {status_text}: {side.upper()} {display_amount} {display_mode} "
-                f"{symbol} ({order_type}){requested_suffix}{sizing_suffix}{ai_suffix}"
+                f"Manual order {status_text}: {final_side} {display_amount} {final_display_mode} "
+                f"{final_symbol} ({final_type}){requested_suffix}{sizing_suffix}{ai_suffix}{review_suffix}"
             ),
             "INFO",
         )
-        message = f"{status_text.title()} {side.upper()} {display_amount} {display_mode} {symbol}."
+        message = f"{status_text.title()} {final_side} {display_amount} {final_display_mode} {final_symbol}."
         if bool(order.get("size_adjusted")):
-            message += f"\nRequested: {requested_display_amount} {display_mode}"
+            message += f"\nRequested: {requested_display_amount} {final_display_mode}"
         if sizing_summary:
             message += f"\nSizing: {sizing_summary}"
         if ai_sizing_reason:
             message += f"\nChatGPT size note: {ai_sizing_reason}"
+        if review_summary:
+            if bool(order.get("risk_monitoring_active")) and not bool(order.get("intervention_pending")):
+                prefix = "Risk watch"
+            else:
+                prefix = "Auto-review pending" if bool(order.get("intervention_pending")) else "Auto-review"
+            message += f"\n{prefix}: {review_summary}"
         terminal._show_async_message(
             "Manual Order",
             message,

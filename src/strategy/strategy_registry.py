@@ -50,7 +50,7 @@ class StrategyRegistry:
     def get(self, name):
         normalized = Strategy.normalize_strategy_name(name)
         strategy = self.strategies.get(normalized)
-        if strategy is not None:
+        if strategy:
             return strategy
         return self._instantiate_strategy(normalized)
 

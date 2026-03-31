@@ -9,6 +9,8 @@ from reasoning.schema import ReasoningResult
 
 
 class ReasoningEngine:
+    """Evaluate trading signals through a reasoning provider and returned decision context."""
+
     def __init__(
         self,
         *,
@@ -21,12 +23,25 @@ class ReasoningEngine:
         minimum_confidence: float = 0.75,
         timeout_seconds: float = 8.0,
     ) -> None:
+        """Initialize the reasoning engine.
+
+        Args:
+            provider: Primary reasoning provider instance.
+            fallback_provider: Provider used when the primary provider fails.
+            context_builder: Builder that assembles the reasoning context.
+            prompt_engine: Engine used to render reasoning prompts.
+            enabled: Whether reasoning evaluation is enabled.
+            mode: Evaluation mode: assistive, advisory, or autonomous.
+            minimum_confidence: Minimum confidence threshold for execution.
+            timeout_seconds: Provider call timeout in seconds.
+        """
         self.provider = provider
         self.fallback_provider = fallback_provider or HeuristicReasoningProvider()
         self.context_builder = context_builder or ReasoningContextBuilder()
         self.prompt_engine = prompt_engine or PromptEngine()
-        self.enabled = bool(enabled)
-        self.mode = str(mode or "assistive").strip().lower() or "assistive"
+        self.enabled = enabled
+        normalized_mode = mode or "assistive"
+        self.mode = normalized_mode.strip().lower()
         if self.mode not in {"assistive", "advisory", "autonomous"}:
             self.mode = "assistive"
         self.minimum_confidence = max(0.0, min(1.0, float(minimum_confidence or 0.75)))
@@ -43,6 +58,11 @@ class ReasoningEngine:
         portfolio_snapshot=None,
         risk_limits=None,
     ) -> tuple[ReasoningResult | None, dict]:
+        """Evaluate a signal with a reasoning provider and return the result.
+
+        The returned tuple contains the reasoning result (or None when disabled)
+        and the context that was used to build the prompt.
+        """
         context = self.context_builder.build(
             symbol=symbol,
             signal=signal,
@@ -81,10 +101,12 @@ class ReasoningEngine:
         return result, context
 
     def should_execute(self, result: ReasoningResult) -> bool:
+        """Determine whether a reasoning result should allow execution."""
         if self.mode == "assistive":
             return True
+
         if str(result.decision or "").strip().upper() == "REJECT":
             return False
-        if float(result.confidence or 0.0) < self.minimum_confidence:
-            return False
-        return True
+
+        confidence = float(result.confidence or 0.0)
+        return confidence >= self.minimum_confidence

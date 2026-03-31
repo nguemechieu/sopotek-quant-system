@@ -37,7 +37,7 @@ This starts the PySide6 desktop application and builds the Qt event loop through
 3. Enter credentials only for the broker you actually plan to use.
 4. Start with `paper`, `practice`, or `sandbox`.
 5. Verify balances, symbols, candles, and orderbook updates.
-6. Open `Settings` and confirm strategy, risk profile, integrations, and language preferences.
+6. Open `Settings` and `Risk` separately and confirm strategy, risk profile, integrations, and language preferences.
 7. Open `Trade Checklist` and `System Health` before placing risk.
 8. Only after the manual path is stable should you consider AI trading or any live mode.
 
@@ -52,7 +52,7 @@ This starts the PySide6 desktop application and builds the Qt event loop through
 1. Connect a paper or practice account.
 2. Open a chart and confirm candle updates.
 3. Open another chart or a detached chart window and confirm it refreshes too.
-4. Place a tiny manual order from the trade ticket.
+4. Place a tiny manual order from the trade ticket and confirm the preflight summary looks sensible.
 5. Confirm the `Trade Log`, `Open Orders`, and `Positions` views update.
 6. Check `System Status`, `Behavior Guard`, and `Performance`.
 7. Validate Telegram notifications or screenshot capture if you plan to use them.

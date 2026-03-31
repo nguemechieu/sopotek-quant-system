@@ -4,9 +4,20 @@ import json
 
 
 class PromptEngine:
+    """Build standardized reasoning prompts for Sopotek's reasoning engine."""
+
     PROMPT_VERSION = "sopotek-reasoning-v1"
 
     def build_messages(self, context, *, mode="assistive"):
+        """Build a system+user message payload for an LLM reasoning provider.
+
+        Args:
+            context: Sanitized reasoning context data.
+            mode: Operating mode, such as assistive, advisory, or autonomous.
+
+        Returns:
+            A list of message dictionaries suitable for an LLM or reasoning provider.
+        """
         normalized_mode = str(mode or "assistive").strip().lower() or "assistive"
         system_prompt = (
             "You are Sopotek's reasoning engine. "

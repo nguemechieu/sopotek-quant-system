@@ -1256,7 +1256,8 @@ class CCXTBroker(BaseBroker):
     async def _fetch_coinbase_ohlcv(self, symbol, timeframe="1h", limit=100, start_time=None, end_time=None):
         await self._ensure_connected()
 
-        requested_limit = max(int(limit or self.COINBASE_MAX_OHLCV_CANDLES), 1)
+        # Respect the user-requested limit while capping at Coinbase's maximum.
+        requested_limit = max(min(int(limit or self.COINBASE_MAX_OHLCV_CANDLES), self.COINBASE_MAX_OHLCV_CANDLES), 1)
         timeframe_seconds = max(self._timeframe_seconds(timeframe), 1)
         remaining = requested_limit
         end_ms = self._normalize_ohlcv_boundary_ms(end_time, end_of_day=True)
@@ -1322,7 +1323,8 @@ class CCXTBroker(BaseBroker):
     async def _fetch_generic_ohlcv_range(self, symbol, timeframe="1h", limit=100, start_time=None, end_time=None):
         await self._ensure_connected()
 
-        requested_limit = max(int(limit or self.GENERIC_MAX_OHLCV_CANDLES), 1)
+        # Respect the user-requested limit while capping at the generic maximum.
+        requested_limit = max(min(int(limit or self.GENERIC_MAX_OHLCV_CANDLES), self.GENERIC_MAX_OHLCV_CANDLES), 1)
         timeframe_seconds = max(self._timeframe_seconds(timeframe), 1)
         step_ms = timeframe_seconds * 1000
         start_ms = self._normalize_ohlcv_boundary_ms(start_time, end_of_day=False)

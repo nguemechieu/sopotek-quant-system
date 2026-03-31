@@ -1,6 +1,7 @@
 # core/symbol_worker.py
 
 import asyncio
+import inspect
 import logging
 
 
@@ -44,12 +45,14 @@ class SymbolWorker:
         if not callable(processor):
             return False
 
-        await processor(
+        result = processor(
             self.symbol,
             timeframe=self.timeframe,
             limit=self.limit,
             publish_debug=True,
         )
+        if inspect.isawaitable(result):
+            await result
         return True
 
 
@@ -112,12 +115,13 @@ class SymbolWorker:
 
                 if signal:
                     trading_system = getattr(self.controller, "trading_system", None) if self.controller is not None else None
-                    process_signal = getattr(trading_system, "process_signal", None)
+                    process_signal = getattr(trading_system, "process_signal", None) if trading_system is not None else None
                     if callable(process_signal):
-                        try:
-                            await process_signal(self.symbol, signal, timeframe=self.timeframe)
-                        except TypeError:
-                            await process_signal(self.symbol, signal)
+                        result = process_signal(self.symbol, signal, timeframe=self.timeframe)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        if result is False:
+                            raise TypeError("process_signal failed")
                     else:
                         await self.execution_manager.execute(
                             symbol=self.symbol,
@@ -129,7 +133,7 @@ class SymbolWorker:
                 await asyncio.sleep(self.poll_interval)
 
             except Exception as e:
-                self.logger.error(f"Worker error {self.symbol}: {e}")
+                self.logger.error("Worker error %s: %s", self.symbol, e)
                 retry_delay = self.poll_interval
                 if "429" in str(e):
                     retry_delay = max(self.poll_interval, 20.0)

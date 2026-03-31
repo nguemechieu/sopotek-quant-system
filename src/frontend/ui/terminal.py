@@ -319,7 +319,9 @@ class Terminal(QMainWindow):
     def __init__(self, controller):
         """Initialize terminal state and start refresh timers."""
 
-        super().__init__(controller)
+        # The controller is not a QWidget parent; it is an application controller
+        # object that manages the terminal state and signals.
+        super().__init__()
 
         set_active_terminal(self)
         sys.excepthook = global_exception_hook
@@ -1713,13 +1715,13 @@ class Terminal(QMainWindow):
         self.strategy_menu = menu_bar.addMenu("")
         self.charts_menu = menu_bar.addMenu("")
         self.data_menu = menu_bar.addMenu("")
+        self.settings_menu = menu_bar.addMenu("")
         self.risk_menu = menu_bar.addMenu("")
         self.review_menu = menu_bar.addMenu("")
         self.research_menu = menu_bar.addMenu("")
         self.tools_menu = menu_bar.addMenu("")
         self.help_menu = menu_bar.addMenu("")
 
-        self.settings_menu = QMenu(self)
         self.language_menu = QMenu(self.settings_menu)
         self.backtest_menu = QMenu(self.strategy_menu)
 
@@ -1853,8 +1855,6 @@ class Terminal(QMainWindow):
 
         self.settings_menu.addAction(self.action_app_settings)
         self.settings_menu.addMenu(self.language_menu)
-        self.file_menu.addMenu(self.settings_menu)
-        self.file_menu.addSeparator()
         self.file_menu.addAction(self.action_exit)
 
         self.trading_menu.addAction(self.action_start_trading)
@@ -13067,12 +13067,12 @@ async def _hotfix_reload_chart_data(self, symbol, timeframe):
 
 
 def _hotfix_open_risk_settings(self):
-    self._show_settings_window()
+    self._show_settings_window("Risk")
 
 
 def _hotfix_save_settings(self):
     try:
-        self._show_settings_window()
+        self._show_settings_window("General")
     except Exception as e:
         self.logger.error(f"Risk settings error: {e}")
 
@@ -13124,6 +13124,18 @@ def _hotfix_update_database_mode_state(window):
             )
         else:
             hint_label.setText("Local mode uses Sopotek's built-in SQLite database in the data folder.")
+
+
+def _hotfix_focus_settings_tab(window, tab_name):
+    tabs = getattr(window, "_settings_tabs", None)
+    if tabs is None or not tab_name:
+        return
+
+    target = str(tab_name).strip().lower()
+    for index in range(tabs.count()):
+        if str(tabs.tabText(index) or "").strip().lower() == target:
+            tabs.setCurrentIndex(index)
+            return
 
 
 def _hotfix_refresh_market_type_picker(window, controller):
@@ -13720,7 +13732,7 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
         self._save_detached_chart_layouts()
 
 
-def _hotfix_show_settings_window(self):
+def _hotfix_show_settings_window(self, initial_tab=None):
     window = self._get_or_create_tool_window(
         "application_settings",
         "Settings",
@@ -13732,7 +13744,10 @@ def _hotfix_show_settings_window(self):
         container = QWidget()
         layout = QVBoxLayout(container)
 
-        intro = QLabel("Configure trading defaults, chart behavior, refresh timing, and risk in one place.")
+        intro = QLabel(
+            "Configure trading defaults, chart behavior, refresh timing, and integrations here. "
+            "Use the Risk menu when you want to jump straight to portfolio controls and risk limits."
+        )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #c9d5e8; font-weight: 600; padding: 4px 0 10px 0;")
         layout.addWidget(intro)
@@ -14248,6 +14263,8 @@ def _hotfix_show_settings_window(self):
         f"OpenAI {'set' if window._settings_openai_api_key.text().strip() else 'not set'}"
     )
 
+    _hotfix_focus_settings_tab(window, initial_tab or "General")
+
     window.show()
     window.raise_()
     window.activateWindow()
@@ -14294,7 +14311,7 @@ def _hotfix_apply_settings_window(self, window=None):
 
 
 def _hotfix_open_settings(self):
-    self._show_settings_window()
+    self._show_settings_window("General")
 
 
 def _hotfix_restore_settings(self):

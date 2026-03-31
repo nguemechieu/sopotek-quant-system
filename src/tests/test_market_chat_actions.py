@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -487,6 +488,262 @@ def test_submit_trade_with_preflight_skips_openai_sizing_for_manual_orders():
     assert order["ai_adjusted"] is False
 
 
+def test_submit_trade_with_preflight_marks_bad_manual_trade_for_pending_review():
+    controller = _make_controller()
+    controller.user_trade_autocorrect_enabled = True
+    controller._pending_user_trade_reviews = {}
+
+    async def fake_create_order(**kwargs):
+        return {
+            "status": "submitted",
+            "id": "manual-review-001",
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "type": kwargs["type"],
+            "amount": kwargs["amount"],
+        }
+
+    async def fake_assess_user_trade_review(**_kwargs):
+        return {
+            "is_bad": True,
+            "action": "correct",
+            "summary": "Stop loss was missing, so the trade had no defined downside protection.",
+            "reasons": ["Stop loss was missing, so the trade had no defined downside protection."],
+            "replacement_side": "buy",
+            "replacement_amount_units": 1.0,
+            "replacement_stop_loss": 95.0,
+            "replacement_take_profit": 107.5,
+            "market_context": {},
+            "reward_risk": 1.5,
+        }
+
+    controller.broker = SimpleNamespace(exchange_name="paper", create_order=fake_create_order)
+    controller._assess_user_trade_review = fake_assess_user_trade_review
+    controller._record_trade_audit = lambda *args, **kwargs: asyncio.sleep(0)
+    controller._notify_user_trade_review = lambda *args, **kwargs: None
+
+    order = asyncio.run(
+        controller.submit_trade_with_preflight(
+            symbol="BTC/USDT",
+            side="buy",
+            amount=1.0,
+            source="manual",
+        )
+    )
+
+    assert order["review_action"] == "correct"
+    assert order["intervention_pending"] is True
+    assert order["intervention_taken"] is False
+    assert controller._pending_user_trade_reviews
+
+
+def test_submit_trade_with_preflight_cancels_open_manual_order_and_replaces_it():
+    controller = _make_controller()
+    controller.user_trade_autocorrect_enabled = True
+    controller._pending_user_trade_reviews = {}
+    create_calls = []
+    cancel_calls = []
+
+    async def fake_create_order(**kwargs):
+        create_calls.append(dict(kwargs))
+        if len(create_calls) == 1:
+            return {
+                "status": "open",
+                "id": "manual-bad-001",
+                "symbol": kwargs["symbol"],
+                "side": kwargs["side"],
+                "type": kwargs["type"],
+                "price": kwargs.get("price"),
+                "amount": kwargs["amount"],
+            }
+        return {
+            "status": "submitted",
+            "id": "manual-good-001",
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "type": kwargs["type"],
+            "price": kwargs.get("price"),
+            "amount": kwargs["amount"],
+        }
+
+    async def fake_cancel_order(order_id, symbol=None):
+        cancel_calls.append((order_id, symbol))
+        return {"id": order_id, "symbol": symbol, "status": "canceled"}
+
+    async def fake_assess_user_trade_review(**_kwargs):
+        return {
+            "is_bad": True,
+            "action": "correct",
+            "summary": "Take profit was missing, so the trade had no defined exit target.",
+            "reasons": ["Take profit was missing, so the trade had no defined exit target."],
+            "replacement_side": "buy",
+            "replacement_amount_units": 1.0,
+            "replacement_stop_loss": 95.0,
+            "replacement_take_profit": 108.0,
+            "market_context": {},
+            "reward_risk": 1.5,
+        }
+
+    controller.broker = SimpleNamespace(
+        exchange_name="paper",
+        create_order=fake_create_order,
+        cancel_order=fake_cancel_order,
+    )
+    controller._assess_user_trade_review = fake_assess_user_trade_review
+    controller._record_trade_audit = lambda *args, **kwargs: asyncio.sleep(0)
+    controller._notify_user_trade_review = lambda *args, **kwargs: None
+
+    order = asyncio.run(
+        controller.submit_trade_with_preflight(
+            symbol="BTC/USDT",
+            side="buy",
+            amount=1.0,
+            order_type="limit",
+            price=100.0,
+            source="manual",
+        )
+    )
+
+    assert cancel_calls == [("manual-bad-001", "BTC/USDT")]
+    assert len(create_calls) == 2
+    assert order["id"] == "manual-good-001"
+    assert order["intervention_taken"] is True
+    assert order["review_replaced_order_id"] == "manual-bad-001"
+
+
+def test_submit_trade_with_preflight_warns_and_monitors_oversized_manual_trade():
+    controller = _make_controller()
+    controller.user_trade_autocorrect_enabled = True
+    controller.user_trade_risk_monitor_enabled = True
+    controller._pending_user_trade_reviews = {}
+    controller._monitored_user_trade_positions = {}
+
+    async def fake_create_order(**kwargs):
+        return {
+            "status": "submitted",
+            "id": "manual-risk-watch-001",
+            "symbol": kwargs["symbol"],
+            "side": kwargs["side"],
+            "type": kwargs["type"],
+            "amount": kwargs["amount"],
+        }
+
+    async def fake_assess_user_trade_review(**_kwargs):
+        return {
+            "is_bad": False,
+            "monitor_only": True,
+            "action": "warn",
+            "summary": "Risk controls require a smaller position size.",
+            "reasons": ["Risk controls require a smaller position size."],
+            "structural_reasons": [],
+            "monitor_reasons": ["Risk controls require a smaller position size."],
+            "replacement_side": "buy",
+            "replacement_amount_units": 0.4,
+            "replacement_stop_loss": 95.0,
+            "replacement_take_profit": 110.0,
+            "market_context": {"risk_distance": 5.0},
+            "reward_risk": 2.0,
+        }
+
+    controller.broker = SimpleNamespace(exchange_name="paper", create_order=fake_create_order)
+    controller._assess_user_trade_review = fake_assess_user_trade_review
+    controller._record_trade_audit = lambda *args, **kwargs: asyncio.sleep(0)
+    controller._notify_user_trade_review = lambda *args, **kwargs: None
+
+    order = asyncio.run(
+        controller.submit_trade_with_preflight(
+            symbol="BTC/USDT",
+            side="buy",
+            amount=1.0,
+            source="manual",
+        )
+    )
+
+    assert order["review_action"] == "warn"
+    assert order["risk_monitoring_active"] is True
+    assert order["intervention_taken"] is False
+    assert order["intervention_pending"] is False
+    assert controller._monitored_user_trade_positions
+
+
+def test_process_monitored_user_trade_positions_reduces_oversized_position_after_adverse_move():
+    controller = _make_controller()
+    controller.user_trade_risk_monitor_enabled = True
+    controller.user_trade_risk_monitor_grace_seconds = 15.0
+    controller._monitored_user_trade_positions = {
+        "manual-risk-watch-001": {
+            "created_at": time.time() - 120.0,
+            "symbol": "BTC/USDT",
+            "position_side": "long",
+            "original_order_id": "manual-risk-watch-001",
+            "original_side": "buy",
+            "current_amount_units": 2.0,
+            "recommended_amount_units": 1.0,
+            "entry_price": 100.0,
+            "stop_loss": 95.0,
+            "take_profit": 110.0,
+            "risk_distance": 5.0,
+            "adverse_threshold": 1.5,
+            "summary": "Risk controls require a smaller position size.",
+            "reasons": ["Risk controls require a smaller position size."],
+            "market_context": {"trend": "mixed"},
+            "timeframe": "1h",
+            "warnings_sent": 1,
+            "last_warning_at": time.time() - 30.0,
+            "ai_recommendation": "",
+            "ai_reason": "",
+            "ai_consulted": False,
+            "last_price": 100.0,
+        }
+    }
+    captured = {}
+    notifications = []
+
+    async def fake_close_position(symbol, amount=None, order_type="market", position=None, position_side=None, position_id=None):
+        captured["symbol"] = symbol
+        captured["amount"] = amount
+        captured["order_type"] = order_type
+        captured["position_side"] = position_side
+        captured["position_id"] = position_id
+        return {"id": "risk-trim-001", "status": "submitted", "symbol": symbol, "amount": amount}
+
+    async def fake_openai_risk_note(**_kwargs):
+        return {
+            "recommendation": "trim",
+            "reason": "Momentum is moving against the long while the position is still larger than the recommended size.",
+        }
+
+    controller.broker = SimpleNamespace(exchange_name="paper", close_position=fake_close_position)
+    controller._recommend_user_trade_monitor_action_with_openai = fake_openai_risk_note
+    controller._record_trade_audit = lambda *args, **kwargs: asyncio.sleep(0)
+    controller._notify_user_trade_review = lambda title, message, level="WARN": notifications.append((title, message, level))
+
+    asyncio.run(
+        controller._process_monitored_user_trade_positions(
+            [
+                {
+                    "symbol": "BTC/USDT",
+                    "position_id": "BTC/USDT:long",
+                    "position_side": "long",
+                    "side": "long",
+                    "amount": 2.0,
+                    "entry_price": 100.0,
+                    "mark_price": 98.0,
+                    "pnl": -4.0,
+                }
+            ]
+        )
+    )
+
+    assert captured["symbol"] == "BTC/USDT"
+    assert abs(float(captured["amount"]) - 1.0) < 1e-9
+    assert captured["position_side"] == "long"
+    assert controller._monitored_user_trade_positions == {}
+    assert notifications
+    assert notifications[-1][0] == "User Trade Risk Controlled"
+    assert "ChatGPT risk note" in notifications[-1][1]
+
+
 def test_submit_trade_with_preflight_resolves_coinbase_derivative_contract_symbol():
     controller = _make_controller()
     submitted = {}
@@ -747,6 +1004,98 @@ def test_preview_trade_submission_blocks_live_trade_when_quote_is_stale():
         raise AssertionError("Expected stale live quote data to block the trade")
 
 
+def test_preview_trade_submission_refreshes_stale_quote_before_blocking():
+    controller = _make_controller()
+    _prime_trade_safety_buffers(controller, "AUD/CAD")
+    _configure_trade_preflight_controller(
+        controller,
+        exchange_name="oanda",
+        mode="live",
+        preference="otc",
+        markets={"AUD/CAD": {"symbol": "AUD/CAD", "base": "AUD", "quote": "CAD", "otc": True, "active": True}},
+        balances={"free_margin": 100000.0, "equity": 100000.0, "cash": 100000.0, "currency": "USD"},
+    )
+    stale_timestamp = (datetime.now(timezone.utc) - timedelta(seconds=40)).isoformat()
+    fresh_timestamp = datetime.now(timezone.utc).isoformat()
+    calls = []
+
+    async def rotating_ticker(symbol):
+        calls.append(symbol)
+        timestamp = stale_timestamp if len(calls) == 1 else fresh_timestamp
+        return {
+            "symbol": symbol,
+            "price": 0.9050,
+            "last": 0.9050,
+            "bid": 0.9049,
+            "ask": 0.9051,
+            "timestamp": timestamp,
+            "_received_at": timestamp,
+        }
+
+    controller._safe_fetch_ticker = rotating_ticker
+
+    preflight = asyncio.run(
+        controller.preview_trade_submission(
+            symbol="AUD/CAD",
+            side="buy",
+            amount=1000.0,
+            order_type="market",
+            source="manual",
+            timeframe="1h",
+        )
+    )
+
+    assert calls == ["AUD/CAD", "AUD/CAD"]
+    assert preflight["market_data_guard"]["blocked"] is False
+    assert preflight["market_data_guard"]["quote"]["fresh"] is True
+
+
+def test_preview_trade_submission_fetches_fresh_quote_for_live_limit_order_without_cached_ticker():
+    controller = _make_controller()
+    _prime_trade_safety_buffers(controller, "GBP/SGD")
+    _configure_trade_preflight_controller(
+        controller,
+        exchange_name="oanda",
+        mode="live",
+        preference="otc",
+        markets={"GBP/SGD": {"symbol": "GBP/SGD", "base": "GBP", "quote": "SGD", "otc": True, "active": True}},
+        balances={"free_margin": 100000.0, "equity": 100000.0, "cash": 100000.0, "currency": "USD"},
+    )
+    fetched = []
+    fresh_timestamp = datetime.now(timezone.utc).isoformat()
+
+    async def fresh_ticker(symbol):
+        fetched.append(symbol)
+        return {
+            "symbol": symbol,
+            "price": 1.7060,
+            "last": 1.7060,
+            "bid": 1.7058,
+            "ask": 1.7062,
+            "timestamp": fresh_timestamp,
+            "_received_at": fresh_timestamp,
+        }
+
+    controller._safe_fetch_ticker = fresh_ticker
+
+    preflight = asyncio.run(
+        controller.preview_trade_submission(
+            symbol="GBP/SGD",
+            side="buy",
+            amount=0.1,
+            quantity_mode="lots",
+            order_type="limit",
+            price=1.7055,
+            source="manual",
+            timeframe="1h",
+        )
+    )
+
+    assert fetched == ["GBP/SGD"]
+    assert preflight["market_data_guard"]["blocked"] is False
+    assert preflight["market_data_guard"]["quote"]["fresh"] is True
+
+
 def test_preview_trade_submission_rejects_unsupported_market_venue():
     controller = _make_controller()
     _prime_trade_safety_buffers(controller, "BTC/USDT")
@@ -851,6 +1200,117 @@ def test_submit_trade_with_preflight_surfaces_execution_manager_skip_reason():
         raise AssertionError("Expected manual trade skip reason to be surfaced")
 
 
+def test_submit_trade_with_preflight_retries_manual_order_with_smaller_balance_sized_amount():
+    controller = _make_controller()
+    audit_events = []
+
+    async def fake_record_trade_audit(stage, **payload):
+        audit_events.append((stage, payload))
+
+    async def fake_preflight_trade_submission(**_kwargs):
+        rows = getattr(fake_preflight_trade_submission, "_rows", None)
+        return dict(rows.pop(0))
+
+    fake_preflight_trade_submission._rows = [
+        {
+            "symbol": "EUR/PLN",
+            "requested_symbol": "EUR/PLN",
+            "requested_amount": 1.35,
+            "requested_mode": "lots",
+            "requested_amount_units": 135000.0,
+            "amount_units": 135000.0,
+            "deterministic_amount_units": 135000.0,
+            "applied_requested_mode_amount": 1.35,
+            "size_adjusted": False,
+            "ai_adjusted": False,
+            "sizing_summary": "Preflight kept the requested size.",
+            "sizing_notes": [],
+            "ai_sizing_reason": "",
+            "reference_price": 4.29385,
+            "closeout_guard": {},
+            "market_data_guard": {"blocked": False},
+            "eligibility_check": {"ok": True},
+            "resolved_venue": "otc",
+            "trade_timeframe": "1h",
+        },
+        {
+            "symbol": "EUR/PLN",
+            "requested_symbol": "EUR/PLN",
+            "requested_amount": 1.35,
+            "requested_mode": "lots",
+            "requested_amount_units": 135000.0,
+            "amount_units": 50000.0,
+            "deterministic_amount_units": 50000.0,
+            "applied_requested_mode_amount": 0.5,
+            "size_adjusted": True,
+            "ai_adjusted": False,
+            "sizing_summary": "Preflight reduced the order to 0.5 lots using balance, margin, or risk limits.",
+            "sizing_notes": ["Available account balance reduced the order size."],
+            "ai_sizing_reason": "",
+            "reference_price": 4.29385,
+            "closeout_guard": {},
+            "market_data_guard": {"blocked": False},
+            "eligibility_check": {"ok": True},
+            "resolved_venue": "otc",
+            "trade_timeframe": "1h",
+        },
+    ]
+
+    async def passthrough_review(order, **_kwargs):
+        return order
+
+    class FakeExecutionManager:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            if len(self.calls) == 1:
+                return {
+                    "status": "rejected",
+                    "reason": "400 Bad Request: Order rejected | INSUFFICIENT_MARGIN",
+                    "symbol": kwargs["symbol"],
+                    "side": kwargs["side"],
+                    "type": kwargs["type"],
+                    "amount": kwargs["amount"],
+                }
+            return {
+                "status": "submitted",
+                "id": "retry-001",
+                "symbol": kwargs["symbol"],
+                "side": kwargs["side"],
+                "type": kwargs["type"],
+                "amount": kwargs["amount"],
+            }
+
+    execution_manager = FakeExecutionManager()
+    controller._record_trade_audit = fake_record_trade_audit
+    controller._preflight_trade_submission = fake_preflight_trade_submission
+    controller._handle_user_trade_review = passthrough_review
+    controller.trading_system = SimpleNamespace(execution_manager=execution_manager)
+    controller.broker = SimpleNamespace(exchange_name="oanda")
+
+    order = asyncio.run(
+        controller.submit_trade_with_preflight(
+            symbol="EUR/PLN",
+            side="sell",
+            amount=1.35,
+            quantity_mode="lots",
+            source="manual",
+            timeframe="1h",
+        )
+    )
+
+    assert execution_manager.calls[0]["amount"] == 135000.0
+    assert execution_manager.calls[1]["amount"] == 50000.0
+    assert order["status"] == "submitted"
+    assert order["retried_after_rejection"] is True
+    assert order["requested_amount"] == 1.35
+    assert order["applied_requested_mode_amount"] == 0.5
+    assert "insufficient_margin" in order["initial_rejection_reason"].lower()
+    assert any(stage == "submit_retry" for stage, _payload in audit_events)
+
+
 def test_preview_trade_submission_caps_usdjpy_by_stop_risk():
     controller = _make_controller()
     controller.max_position_size_pct = 10000.0
@@ -923,6 +1383,79 @@ def test_preview_trade_submission_caps_usdjpy_by_stop_risk():
     assert preflight["amount_units"] == pytest.approx(60000.0)
     assert preflight["size_adjusted"] is True
     assert any("max risk" in note.lower() for note in preflight["sizing_notes"])
+
+
+def test_preview_trade_submission_caps_oanda_manual_trade_by_available_balance_when_margin_missing():
+    controller = _make_controller()
+    _prime_trade_safety_buffers(controller, "EUR/PLN")
+    _configure_trade_preflight_controller(
+        controller,
+        exchange_name="oanda",
+        mode="live",
+        preference="otc",
+        markets={"EUR/PLN": {"symbol": "EUR/PLN", "base": "EUR", "quote": "PLN", "otc": True, "active": True}},
+        balances={"free": {"PLN": 500.0}, "equity": 500.0, "currency": "PLN"},
+    )
+    controller.max_position_size_pct = 1000.0
+
+    async def fixed_ticker(symbol):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return {
+            "symbol": symbol,
+            "price": 4.29385,
+            "last": 4.29385,
+            "bid": 4.29375,
+            "ask": 4.29395,
+            "timestamp": timestamp,
+            "_received_at": timestamp,
+        }
+
+    controller._safe_fetch_ticker = fixed_ticker
+
+    preflight = asyncio.run(
+        controller.preview_trade_submission(
+            symbol="EUR/PLN",
+            side="sell",
+            amount=1000.0,
+            source="manual",
+            timeframe="1h",
+        )
+    )
+
+    expected_cap = 500.0 * controller.ORDER_SIZE_BUFFER / 4.29385
+    assert preflight["amount_units"] == pytest.approx(expected_cap)
+    assert preflight["size_adjusted"] is True
+    assert any("available account balance" in note.lower() for note in preflight["sizing_notes"])
+
+
+def test_get_market_stream_status_recovers_oanda_polling_when_task_is_missing():
+    controller = _make_controller()
+    controller.connected = True
+    controller.broker = SimpleNamespace(exchange_name="oanda")
+    controller._ws_task = None
+    controller._ticker_task = None
+    controller._market_stream_recovery_task = None
+
+    async def fake_start_ticker_polling():
+        return None
+
+    scheduled = []
+
+    def fake_create_task(coro, name):
+        scheduled.append(name)
+        coro.close()
+        return SimpleNamespace(done=lambda: False)
+
+    controller._start_ticker_polling = fake_start_ticker_polling
+    controller._create_task = fake_create_task
+
+    async def run_check():
+        return controller.get_market_stream_status()
+
+    status = asyncio.run(run_check())
+
+    assert status == "Restarting"
+    assert scheduled == ["ticker_poll_recovery"]
 
 
 def test_handle_market_chat_action_surfaces_chatgpt_size_note():

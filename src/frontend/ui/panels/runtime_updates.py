@@ -42,6 +42,12 @@ async def refresh_positions_async(terminal):
         positions_snapshot = active_positions_snapshot()
     terminal._populate_positions_table(positions_snapshot)
     terminal._refresh_position_analysis_window()
+    review_queue = getattr(getattr(terminal, "controller", None), "queue_pending_user_trade_position_reviews", None)
+    if callable(review_queue):
+        try:
+            review_queue(positions_snapshot)
+        except Exception as exc:
+            terminal.logger.debug("Pending user trade review scheduling failed: %s", exc)
     terminal._last_positions_refresh_at = time.monotonic()
 
 

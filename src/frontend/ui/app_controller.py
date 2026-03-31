@@ -214,6 +214,7 @@ class AppController(QMainWindow):
         self._login_lock = asyncio.Lock()
 
         self._ticker_task = None
+        self._market_stream_recovery_task = None
         self._ws_task = None
         self._ws_bus_task = None
         self.ws_bus = None
@@ -367,6 +368,34 @@ class AppController(QMainWindow):
         self._strategy_auto_assignment_deferred_task = None
         self._strategy_ranking_executor = None
         self._terminal_runtime_restore_task = None
+        self.user_trade_autocorrect_enabled = str(
+            self.settings.value("risk/user_trade_autocorrect_enabled", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.user_trade_min_reward_risk = max(
+            1.0,
+            float(self.settings.value("risk/user_trade_min_reward_risk", 1.5) or 1.5),
+        )
+        self.user_trade_bias_confidence_threshold = max(
+            0.5,
+            min(0.95, float(self.settings.value("risk/user_trade_bias_confidence_threshold", 0.72) or 0.72)),
+        )
+        self.user_trade_risk_monitor_enabled = str(
+            self.settings.value("risk/user_trade_risk_monitor_enabled", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.user_trade_risk_monitor_grace_seconds = max(
+            15.0,
+            float(self.settings.value("risk/user_trade_risk_monitor_grace_seconds", 60.0) or 60.0),
+        )
+        self.user_trade_risk_monitor_adverse_move_fraction = max(
+            0.1,
+            min(
+                1.0,
+                float(self.settings.value("risk/user_trade_risk_monitor_adverse_move_fraction", 0.35) or 0.35),
+            ),
+        )
+        self._pending_user_trade_reviews = {}
+        self._pending_user_trade_review_task = None
+        self._monitored_user_trade_positions = {}
 
         self.portfolio = None
         self.ai_signal = None
@@ -2722,7 +2751,17 @@ class AppController(QMainWindow):
             return ticker
         snapshot = dict(ticker)
         normalized_symbol = self._normalize_market_data_symbol(snapshot.get("symbol") or symbol) or str(symbol or "").strip().upper()
-        received_at = snapshot.get("_received_at") or snapshot.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        raw_payload = snapshot.get("raw") if isinstance(snapshot.get("raw"), dict) else {}
+        broker_timestamp = (
+            snapshot.get("_received_at")
+            or snapshot.get("timestamp")
+            or snapshot.get("time")
+            or snapshot.get("datetime")
+            or raw_payload.get("time")
+            or raw_payload.get("timestamp")
+            or raw_payload.get("datetime")
+        )
+        received_at = broker_timestamp or datetime.now(timezone.utc).isoformat()
         snapshot["symbol"] = normalized_symbol
         snapshot.setdefault("timestamp", received_at)
         snapshot["_received_at"] = received_at
@@ -2773,14 +2812,38 @@ class AppController(QMainWindow):
         )
         orderbook_threshold = max(1.0, float(getattr(self, "ORDERBOOK_STALE_SECONDS", 20.0) or 20.0))
 
-        ticker_snapshot = self._prepare_ticker_snapshot(
-            normalized_symbol,
-            ticker or self._cached_ticker_snapshot(normalized_symbol),
-        )
+        ticker_payload = ticker or self._cached_ticker_snapshot(normalized_symbol)
+        if not isinstance(ticker_payload, dict):
+            fetch_ticker = getattr(self, "_safe_fetch_ticker", None)
+            if callable(fetch_ticker):
+                try:
+                    ticker_payload = await fetch_ticker(normalized_symbol)
+                except Exception:
+                    ticker_payload = None
+        ticker_snapshot = self._prepare_ticker_snapshot(normalized_symbol, ticker_payload)
         quote_age_seconds = age_seconds(
             (ticker_snapshot or {}).get("_received_at") or (ticker_snapshot or {}).get("timestamp")
         )
         quote_fresh = quote_age_seconds is not None and quote_age_seconds <= quote_threshold
+        if not quote_fresh:
+            fetch_ticker = getattr(self, "_safe_fetch_ticker", None)
+            if callable(fetch_ticker):
+                try:
+                    refreshed_payload = await fetch_ticker(normalized_symbol)
+                except Exception:
+                    refreshed_payload = None
+                refreshed_snapshot = self._prepare_ticker_snapshot(normalized_symbol, refreshed_payload)
+                refreshed_age_seconds = age_seconds(
+                    (refreshed_snapshot or {}).get("_received_at") or (refreshed_snapshot or {}).get("timestamp")
+                )
+                refreshed_fresh = refreshed_age_seconds is not None and refreshed_age_seconds <= quote_threshold
+                if refreshed_fresh or (
+                    refreshed_age_seconds is not None
+                    and (quote_age_seconds is None or refreshed_age_seconds < quote_age_seconds)
+                ):
+                    ticker_snapshot = refreshed_snapshot
+                    quote_age_seconds = refreshed_age_seconds
+                    quote_fresh = refreshed_fresh
 
         candle_timestamp = self._latest_cached_candle_timestamp(normalized_symbol, timeframe=timeframe_value)
         candle_age_seconds = age_seconds(candle_timestamp)
@@ -3075,6 +3138,178 @@ class AppController(QMainWindow):
             )
         )
 
+    @staticmethod
+    def _is_balance_or_equity_trade_rejection(reason):
+        lowered = str(reason or "").strip().lower()
+        if not lowered:
+            return False
+        return any(
+            token in lowered
+            for token in (
+                "insufficient margin",
+                "insufficient funds",
+                "insufficient balance",
+                "margin available",
+                "not enough margin",
+                "not enough funds",
+                "not enough balance",
+                "no available balance",
+                "no free margin",
+                "insufficient buying power",
+                "not enough buying power",
+            )
+        )
+
+    def _trade_account_unit_price(self, reference_price, risk_context=None):
+        price_value = self._safe_balance_metric(reference_price)
+        if price_value is None or price_value <= 0:
+            return None
+
+        account_price = float(price_value)
+        if isinstance(risk_context, dict) and bool(risk_context.get("is_forex")):
+            quote_to_account_rate = self._safe_balance_metric(
+                risk_context.get("quote_to_account_rate", 1.0)
+            )
+            if quote_to_account_rate is not None and quote_to_account_rate > 0:
+                account_price *= float(quote_to_account_rate)
+        return account_price if account_price > 0 else None
+
+    async def _retry_user_trade_after_balance_rejection(
+        self,
+        *,
+        order,
+        preflight,
+        symbol,
+        side,
+        amount,
+        quantity_mode=None,
+        order_type="market",
+        price=None,
+        stop_price=None,
+        stop_loss=None,
+        take_profit=None,
+        source="manual",
+        strategy_name="Manual",
+        reason="Manual order",
+        timeframe=None,
+    ):
+        if not isinstance(order, dict):
+            return order, preflight
+        if not self._is_user_directed_trade_source(source):
+            return order, preflight
+
+        status = str(order.get("status") or "").strip().lower()
+        reject_reason = str(
+            order.get("reason")
+            or (
+                ((order.get("raw") or {}) if isinstance(order.get("raw"), dict) else {}).get("error")
+            )
+            or ""
+        ).strip()
+        if status != "rejected" or not self._is_balance_or_equity_trade_rejection(reject_reason):
+            return order, preflight
+
+        previous_units = self._safe_balance_metric(order.get("amount"))
+        if previous_units is None:
+            previous_units = self._safe_balance_metric((preflight or {}).get("amount_units"))
+        previous_units = max(0.0, float(previous_units or 0.0))
+        if previous_units <= 0:
+            order["retried_after_rejection"] = False
+            order["initial_rejection_reason"] = reject_reason
+            return order, preflight
+
+        refreshed_preflight = await self._preflight_trade_submission(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            quantity_mode=quantity_mode,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            source=source,
+            timeframe=timeframe,
+        )
+        retry_units = max(0.0, float(refreshed_preflight.get("amount_units") or 0.0))
+        if retry_units <= 0 or retry_units >= previous_units - 1e-9:
+            order["retried_after_rejection"] = False
+            order["initial_rejection_reason"] = reject_reason
+            order["retry_sizing_summary"] = (
+                "Broker rejected the first size and the latest balance/equity snapshot did not yield a smaller safe amount."
+            )
+            return order, preflight
+
+        order_symbol = str(refreshed_preflight.get("symbol") or symbol).strip().upper() or str(symbol or "").strip().upper()
+        trading_system = getattr(self, "trading_system", None)
+        execution_manager = getattr(trading_system, "execution_manager", None)
+        broker = getattr(self, "broker", None)
+
+        retry_summary = (
+            "Broker rejected the first size, so Sopotek recalculated from the latest balance/equity snapshot and retried smaller."
+        )
+        if hasattr(self, "_record_trade_audit"):
+            await self._record_trade_audit(
+                "submit_retry",
+                status="retrying",
+                symbol=order_symbol,
+                requested_symbol=str(refreshed_preflight.get("requested_symbol") or symbol).strip().upper(),
+                side=side,
+                order_type=order_type,
+                source=source,
+                venue=refreshed_preflight.get("resolved_venue"),
+                message=retry_summary,
+                payload={
+                    "initial_rejection_reason": reject_reason,
+                    "previous_order": dict(order),
+                    "preflight": dict(refreshed_preflight),
+                },
+            )
+
+        if execution_manager is not None:
+            retried_order = await execution_manager.execute(
+                symbol=order_symbol,
+                side=side,
+                amount=retry_units,
+                type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                source=source,
+                strategy_name=strategy_name,
+                reason=reason,
+                confidence=1.0,
+            )
+        elif broker is not None:
+            retried_order = await broker.create_order(
+                symbol=order_symbol,
+                side=side,
+                amount=retry_units,
+                type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+            if isinstance(retried_order, dict):
+                retried_order.setdefault("source", source)
+                retried_order.setdefault("strategy_name", strategy_name)
+                retried_order.setdefault("reason", reason)
+        else:
+            retried_order = None
+
+        if not isinstance(retried_order, dict):
+            order["retried_after_rejection"] = False
+            order["initial_rejection_reason"] = reject_reason
+            order["retry_sizing_summary"] = retry_summary
+            return order, preflight
+
+        retried_order["retried_after_rejection"] = True
+        retried_order["initial_rejection_reason"] = reject_reason
+        retried_order["retry_sizing_summary"] = retry_summary
+        return retried_order, refreshed_preflight
+
     async def _preflight_trade_submission(
         self,
         *,
@@ -3154,6 +3389,7 @@ class AppController(QMainWindow):
             balances,
             broker=broker,
         )
+        account_unit_price = self._trade_account_unit_price(reference_price, risk_context)
 
         hard_caps = []
         sizing_notes = []
@@ -3188,16 +3424,39 @@ class AppController(QMainWindow):
                 sizing_notes.append("Available cash balance reduced the order size.")
 
         margin_rate = await self._instrument_margin_rate(resolved_symbol, broker=broker)
-        if reference_price and reference_price > 0 and free_margin is not None and margin_rate is not None and margin_rate > 0:
+        margin_cap_applied = False
+        if (
+            account_unit_price is not None
+            and free_margin is not None
+            and margin_rate is not None
+            and margin_rate > 0
+        ):
             if free_margin <= 0:
                 raise RuntimeError("No free margin is available for a new leveraged trade.")
             margin_cap = max(
                 0.0,
-                float(free_margin) * self.ORDER_SIZE_BUFFER / (float(reference_price) * float(margin_rate)),
+                float(free_margin) * self.ORDER_SIZE_BUFFER / (float(account_unit_price) * float(margin_rate)),
             )
             hard_caps.append(margin_cap)
+            margin_cap_applied = True
             if margin_cap + 1e-12 < requested_units:
                 sizing_notes.append("Free margin reduced the order size for this symbol.")
+
+        if (
+            exchange_name == "oanda"
+            and not margin_cap_applied
+            and available_cash is not None
+            and account_unit_price is not None
+        ):
+            if available_cash <= 0:
+                raise RuntimeError("No available account balance is available for a new trade.")
+            balance_cap = max(
+                0.0,
+                float(available_cash) * self.ORDER_SIZE_BUFFER / float(account_unit_price),
+            )
+            hard_caps.append(balance_cap)
+            if balance_cap + 1e-12 < requested_units:
+                sizing_notes.append("Available account balance reduced the order size.")
 
         trading_system = getattr(self, "trading_system", None)
         risk_engine = getattr(trading_system, "risk_engine", None)
@@ -3225,9 +3484,9 @@ class AppController(QMainWindow):
             hard_caps.append(adjusted_units)
             if adjusted_units + 1e-12 < requested_units:
                 sizing_notes.append(str(risk_reason or "Risk settings reduced the order size.").strip())
-        elif equity is not None and reference_price and reference_price > 0:
+        elif equity is not None and account_unit_price is not None:
             max_position_size_pct = max(0.001, float(getattr(self, "max_position_size_pct", 0.10) or 0.10))
-            risk_cap = max(0.0, float(equity) * max_position_size_pct / float(reference_price))
+            risk_cap = max(0.0, float(equity) * max_position_size_pct / float(account_unit_price))
             hard_caps.append(risk_cap)
             if risk_cap + 1e-12 < requested_units:
                 sizing_notes.append(f"Risk settings capped the order to {max_position_size_pct:.1%} of equity.")
@@ -3451,6 +3710,24 @@ class AppController(QMainWindow):
             )
             raise
 
+        order, preflight = await self._retry_user_trade_after_balance_rejection(
+            order=order,
+            preflight=preflight,
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            quantity_mode=quantity_mode,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            source=source,
+            strategy_name=strategy_name,
+            reason=reason,
+            timeframe=preflight.get("trade_timeframe") or timeframe,
+        )
+
         if not order:
             skip_reason = None
             if execution_manager is not None and hasattr(execution_manager, "last_skip_reason"):
@@ -3493,6 +3770,18 @@ class AppController(QMainWindow):
             order["market_data_guard"] = dict(preflight.get("market_data_guard") or {})
             order["eligibility_check"] = dict(preflight.get("eligibility_check") or {})
             order["resolved_venue"] = preflight.get("resolved_venue")
+            retry_summary = str(order.get("retry_sizing_summary") or "").strip()
+            if retry_summary:
+                base_summary = str(order.get("sizing_summary") or "").strip()
+                order["sizing_summary"] = (
+                    f"{retry_summary} {base_summary}".strip()
+                    if base_summary
+                    else retry_summary
+                )
+                initial_rejection_reason = str(order.get("initial_rejection_reason") or "").strip()
+                if initial_rejection_reason:
+                    existing_notes = list(order.get("sizing_notes", []) or [])
+                    order["sizing_notes"] = [initial_rejection_reason, *existing_notes]
 
         await self._record_trade_audit(
             "submit_success",
@@ -3507,6 +3796,19 @@ class AppController(QMainWindow):
             message="Order submission completed.",
             payload={"preflight": dict(preflight), "order": dict(order) if isinstance(order, dict) else order},
         )
+        if isinstance(order, dict):
+            order = await self._handle_user_trade_review(
+                order,
+                symbol=order_symbol,
+                side=side,
+                order_type=order_type,
+                price=price,
+                stop_price=stop_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                source=source,
+                timeframe=preflight.get("trade_timeframe") or timeframe,
+            )
         return order
 
     def _normalize_strategy_symbol_key(self, symbol):
@@ -4633,6 +4935,1137 @@ class AppController(QMainWindow):
             strategy_name="Sopotek Pilot",
             reason="Sopotek Pilot trade command",
         )
+
+    @staticmethod
+    def _is_user_directed_trade_source(source):
+        return str(source or "").strip().lower() == "manual"
+
+    @staticmethod
+    def _normalize_trade_side(side):
+        normalized = str(side or "").strip().lower()
+        return "sell" if normalized in {"sell", "short"} else "buy"
+
+    @staticmethod
+    def _position_side_from_trade_side(side):
+        return "short" if AppController._normalize_trade_side(side) == "sell" else "long"
+
+    @staticmethod
+    def _opposite_trade_side(side):
+        return "sell" if AppController._normalize_trade_side(side) == "buy" else "buy"
+
+    async def _user_trade_market_context(self, symbol, *, timeframe=None, reference_price=None):
+        normalized_symbol = str(symbol or "").strip().upper()
+        resolved_timeframe = str(timeframe or getattr(self, "time_frame", "1h") or "1h").strip() or "1h"
+        reference = self._safe_balance_metric(reference_price)
+        fallback_distance = max(abs(float(reference or 0.0)) * 0.002, 1e-6) if reference not in (None, "") else 1e-6
+        context = {
+            "symbol": normalized_symbol,
+            "timeframe": resolved_timeframe,
+            "trend": "mixed",
+            "preferred_side": None,
+            "confidence": 0.0,
+            "latest_price": float(reference) if reference not in (None, "") else None,
+            "ema_fast": None,
+            "ema_slow": None,
+            "rsi": None,
+            "support": None,
+            "resistance": None,
+            "atr": None,
+            "risk_distance": fallback_distance,
+            "reason": "No strong directional bias was available.",
+        }
+
+        tick = None
+        candles = None
+        try:
+            tick = await self._safe_fetch_ticker(normalized_symbol)
+        except Exception:
+            tick = None
+        try:
+            candles = await self._safe_fetch_ohlcv(normalized_symbol, timeframe=resolved_timeframe, limit=120)
+        except Exception:
+            candles = None
+
+        if isinstance(tick, dict):
+            tick_price = self._safe_balance_metric(
+                tick.get("price") or tick.get("last") or tick.get("bid") or tick.get("ask")
+            )
+            if tick_price is not None and tick_price > 0:
+                context["latest_price"] = float(tick_price)
+                context["risk_distance"] = max(abs(float(tick_price)) * 0.002, 1e-6)
+
+        if not isinstance(candles, list) or not candles:
+            if context["latest_price"] is not None and context["latest_price"] > 0:
+                context["reason"] = "Technical candle history was unavailable, so the trade will use a conservative fallback risk distance."
+            return context
+
+        frame = pd.DataFrame(candles)
+        if frame.shape[1] < 6:
+            return context
+        frame = frame.iloc[:, :6].copy()
+        frame.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        for column in ("open", "high", "low", "close", "volume"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame = frame.dropna(subset=["high", "low", "close"])
+        if frame.empty:
+            return context
+
+        closes = frame["close"]
+        highs = frame["high"]
+        lows = frame["low"]
+        latest_close = self._safe_balance_metric(context.get("latest_price")) or float(closes.iloc[-1])
+        ema_fast = float(closes.ewm(span=min(20, max(len(closes), 2)), adjust=False).mean().iloc[-1])
+        ema_slow_span = 50 if len(closes) >= 50 else max(21, min(len(closes), 50))
+        ema_slow = float(closes.ewm(span=ema_slow_span, adjust=False).mean().iloc[-1])
+        rsi = self._market_chat_rsi(closes, period=14)
+        window = min(20, len(frame))
+        support = float(lows.tail(window).min())
+        resistance = float(highs.tail(window).max())
+        prev_close = closes.shift(1).fillna(closes)
+        tr = pd.concat(
+            [
+                (highs - lows).abs(),
+                (highs - prev_close).abs(),
+                (lows - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = float(tr.tail(min(len(tr), 14)).mean()) if not tr.empty else 0.0
+        risk_distance = atr * 1.5 if atr > 0 else max(abs(float(latest_close)) * 0.002, 1e-6)
+
+        trend = "mixed"
+        preferred_side = None
+        if latest_close >= ema_fast >= ema_slow:
+            trend = "bullish"
+            preferred_side = "buy"
+        elif latest_close <= ema_fast <= ema_slow:
+            trend = "bearish"
+            preferred_side = "sell"
+
+        if preferred_side == "buy" and rsi is not None and float(rsi) < 52.0:
+            preferred_side = None
+            trend = "mixed"
+        elif preferred_side == "sell" and rsi is not None and float(rsi) > 48.0:
+            preferred_side = None
+            trend = "mixed"
+
+        trend_strength = min(1.0, abs(float(ema_fast) - float(ema_slow)) / max(abs(float(latest_close)), 1e-9) / 0.02)
+        rsi_strength = 0.0
+        if rsi is not None:
+            rsi_strength = min(1.0, abs(float(rsi) - 50.0) / 20.0)
+        confidence = ((trend_strength * 0.65) + (rsi_strength * 0.35)) if preferred_side else 0.0
+        if preferred_side == "buy":
+            reason = "EMA trend and RSI both support a bullish continuation."
+        elif preferred_side == "sell":
+            reason = "EMA trend and RSI both support a bearish continuation."
+        else:
+            reason = "EMA and RSI are mixed, so no strong directional bias is active."
+
+        context.update(
+            {
+                "trend": trend,
+                "preferred_side": preferred_side,
+                "confidence": float(max(0.0, min(confidence, 0.99))),
+                "latest_price": float(latest_close),
+                "ema_fast": float(ema_fast),
+                "ema_slow": float(ema_slow),
+                "rsi": float(rsi) if rsi is not None else None,
+                "support": float(support),
+                "resistance": float(resistance),
+                "atr": float(atr),
+                "risk_distance": float(max(risk_distance, 1e-6)),
+                "reason": reason,
+            }
+        )
+        return context
+
+    def _suggest_user_trade_levels(self, symbol, side, entry_price, market_context, *, reward_multiple=None):
+        entry = self._safe_balance_metric(entry_price)
+        if entry is None or entry <= 0:
+            return None, None
+
+        normalized_side = self._normalize_trade_side(side)
+        reward_ratio = max(1.0, float(reward_multiple or getattr(self, "user_trade_min_reward_risk", 1.5) or 1.5))
+        risk_distance = max(
+            self._safe_balance_metric((market_context or {}).get("risk_distance")) or 0.0,
+            abs(float(entry)) * 0.002,
+            1e-6,
+        )
+        support = self._safe_balance_metric((market_context or {}).get("support"))
+        resistance = self._safe_balance_metric((market_context or {}).get("resistance"))
+
+        if normalized_side == "sell":
+            stop_loss = float(entry) + risk_distance
+            if resistance is not None and resistance > float(entry):
+                stop_loss = max(stop_loss, resistance)
+            take_profit = float(entry) - (abs(float(stop_loss) - float(entry)) * reward_ratio)
+            if support is not None and support < float(entry):
+                take_profit = min(take_profit, support)
+        else:
+            stop_loss = float(entry) - risk_distance
+            if support is not None and support < float(entry):
+                stop_loss = min(stop_loss, support)
+            take_profit = float(entry) + (abs(float(entry) - float(stop_loss)) * reward_ratio)
+            if resistance is not None and resistance > float(entry):
+                take_profit = max(take_profit, resistance)
+        return float(stop_loss), float(take_profit)
+
+    async def _assess_user_trade_review(
+        self,
+        *,
+        symbol,
+        side,
+        amount_units,
+        reference_price,
+        stop_loss=None,
+        take_profit=None,
+        timeframe=None,
+    ):
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_side = self._normalize_trade_side(side)
+        entry_price = self._safe_balance_metric(reference_price)
+        if entry_price is None or entry_price <= 0:
+            return {
+                "is_bad": False,
+                "action": "keep",
+                "summary": "",
+                "reasons": [],
+                "replacement_side": normalized_side,
+                "replacement_amount_units": float(abs(self._safe_balance_metric(amount_units) or 0.0)),
+                "replacement_stop_loss": self._safe_balance_metric(stop_loss),
+                "replacement_take_profit": self._safe_balance_metric(take_profit),
+                "market_context": {},
+                "reward_risk": None,
+            }
+
+        market_context = await self._user_trade_market_context(
+            normalized_symbol,
+            timeframe=timeframe,
+            reference_price=entry_price,
+        )
+        min_reward_risk = max(1.0, float(getattr(self, "user_trade_min_reward_risk", 1.5) or 1.5))
+        bias_threshold = max(
+            0.5,
+            min(0.95, float(getattr(self, "user_trade_bias_confidence_threshold", 0.72) or 0.72)),
+        )
+        structural_reasons = []
+        monitor_reasons = []
+        entry_value = float(entry_price)
+        stop_value = self._safe_balance_metric(stop_loss)
+        take_value = self._safe_balance_metric(take_profit)
+
+        stop_valid = stop_value is not None and stop_value > 0 and (
+            (normalized_side == "buy" and stop_value < entry_value)
+            or (normalized_side == "sell" and stop_value > entry_value)
+        )
+        take_valid = take_value is not None and take_value > 0 and (
+            (normalized_side == "buy" and take_value > entry_value)
+            or (normalized_side == "sell" and take_value < entry_value)
+        )
+
+        suggested_stop, suggested_take = self._suggest_user_trade_levels(
+            normalized_symbol,
+            normalized_side,
+            entry_value,
+            market_context,
+            reward_multiple=min_reward_risk,
+        )
+        replacement_side = normalized_side
+        replacement_stop = float(stop_value) if stop_valid and stop_value is not None else suggested_stop
+        replacement_take = float(take_value) if take_valid and take_value is not None else suggested_take
+        reward_risk = None
+
+        if stop_value is None:
+            structural_reasons.append("Stop loss was missing, so the trade had no defined downside protection.")
+        elif not stop_valid:
+            structural_reasons.append("Stop loss was on the wrong side of entry for this direction.")
+
+        if take_value is None:
+            structural_reasons.append("Take profit was missing, so the trade had no defined exit target.")
+        elif not take_valid:
+            structural_reasons.append("Take profit was on the wrong side of entry for this direction.")
+
+        if replacement_stop is not None and replacement_take is not None:
+            risk_distance = abs(entry_value - float(replacement_stop))
+            reward_distance = abs(float(replacement_take) - entry_value)
+            if risk_distance > 1e-9:
+                reward_risk = reward_distance / risk_distance
+                if reward_risk + 1e-9 < min_reward_risk:
+                    structural_reasons.append(
+                        f"Reward-to-risk was only {reward_risk:.2f}:1, below the {min_reward_risk:.2f}:1 minimum."
+                    )
+                    if normalized_side == "sell":
+                        replacement_take = float(entry_value - (risk_distance * min_reward_risk))
+                    else:
+                        replacement_take = float(entry_value + (risk_distance * min_reward_risk))
+                    reward_risk = min_reward_risk
+
+        preferred_side = str((market_context or {}).get("preferred_side") or "").strip().lower()
+        bias_confidence = float((market_context or {}).get("confidence", 0.0) or 0.0)
+        if preferred_side and preferred_side != normalized_side and bias_confidence >= bias_threshold:
+            replacement_side = preferred_side
+            replacement_stop, replacement_take = self._suggest_user_trade_levels(
+                normalized_symbol,
+                replacement_side,
+                entry_value,
+                market_context,
+                reward_multiple=min_reward_risk,
+            )
+            structural_reasons.append(
+                (
+                    f"Trade direction conflicted with the live {str((market_context or {}).get('trend') or 'mixed').title()} "
+                    f"bias ({bias_confidence:.0%} confidence). {str((market_context or {}).get('reason') or '').strip()}"
+                ).strip()
+            )
+
+        recommended_amount_units = float(abs(self._safe_balance_metric(amount_units) or 0.0))
+        risk_context = {}
+        try:
+            risk_context = await self._resolve_trade_risk_context(
+                normalized_symbol,
+                entry_value,
+                dict(getattr(self, "balances", {}) or {}),
+                broker=getattr(self, "broker", None),
+            )
+        except Exception:
+            risk_context = {}
+        trading_system = getattr(self, "trading_system", None)
+        risk_engine = getattr(trading_system, "risk_engine", None)
+        if risk_engine is not None and recommended_amount_units > 0:
+            try:
+                allowed, adjusted_units, risk_reason = risk_engine.adjust_trade(
+                    float(entry_value),
+                    recommended_amount_units,
+                    symbol=normalized_symbol,
+                    stop_price=replacement_stop,
+                    quote_to_account_rate=risk_context.get("quote_to_account_rate", 1.0),
+                    pip_size=risk_context.get("pip_size"),
+                )
+            except Exception:
+                allowed, adjusted_units, risk_reason = True, recommended_amount_units, ""
+            adjusted_units = max(0.0, float(adjusted_units or 0.0))
+            if not allowed or adjusted_units <= 0:
+                structural_reasons.append(
+                    str(risk_reason or "Risk controls do not allow this trade at the current size.").strip()
+                )
+                recommended_amount_units = 0.0
+            elif adjusted_units + 1e-9 < recommended_amount_units:
+                monitor_reasons.append(
+                    str(risk_reason or "Risk controls require a smaller position size.").strip()
+                )
+                recommended_amount_units = adjusted_units
+
+        action = "keep"
+        reasons = list(structural_reasons) + list(monitor_reasons)
+        if structural_reasons:
+            action = "reverse" if replacement_side != normalized_side else "correct"
+            if recommended_amount_units <= 0:
+                action = "close"
+        elif monitor_reasons:
+            action = "warn"
+
+        summary = " ".join(str(reason).strip() for reason in reasons if str(reason).strip()).strip()
+        return {
+            "is_bad": bool(structural_reasons),
+            "monitor_only": bool(monitor_reasons and not structural_reasons),
+            "action": action,
+            "summary": summary,
+            "reasons": list(reasons),
+            "structural_reasons": list(structural_reasons),
+            "monitor_reasons": list(monitor_reasons),
+            "replacement_side": replacement_side,
+            "replacement_amount_units": float(recommended_amount_units),
+            "replacement_stop_loss": self._safe_balance_metric(replacement_stop),
+            "replacement_take_profit": self._safe_balance_metric(replacement_take),
+            "market_context": dict(market_context or {}),
+            "reward_risk": reward_risk,
+        }
+
+    async def _recommend_user_trade_monitor_action_with_openai(
+        self,
+        *,
+        monitor,
+        position,
+        current_price,
+        adverse_distance,
+    ):
+        api_key = str(getattr(self, "openai_api_key", "") or "").strip()
+        if not api_key:
+            return None
+
+        payload_context = {
+            "symbol": str((monitor or {}).get("symbol") or (position or {}).get("symbol") or "").strip().upper(),
+            "position_side": str(
+                (position or {}).get("position_side")
+                or (position or {}).get("side")
+                or (monitor or {}).get("position_side")
+                or ""
+            ).strip().lower(),
+            "current_amount_units": float(abs(self._safe_balance_metric((position or {}).get("amount")) or 0.0)),
+            "recommended_amount_units": float(abs(self._safe_balance_metric((monitor or {}).get("recommended_amount_units")) or 0.0)),
+            "entry_price": self._safe_balance_metric((position or {}).get("entry_price") or (monitor or {}).get("entry_price")),
+            "current_price": self._safe_balance_metric(current_price),
+            "stop_loss": self._safe_balance_metric((monitor or {}).get("stop_loss")),
+            "take_profit": self._safe_balance_metric((monitor or {}).get("take_profit")),
+            "adverse_distance": float(abs(self._safe_balance_metric(adverse_distance) or 0.0)),
+            "risk_distance": self._safe_balance_metric((monitor or {}).get("risk_distance")),
+            "summary": str((monitor or {}).get("summary") or "").strip(),
+            "market_context": dict((monitor or {}).get("market_context") or {}),
+            "pnl": self._safe_balance_metric((position or {}).get("pnl")),
+        }
+        payload = {
+            "model": self.openai_model or "gpt-5-mini",
+            "input": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a conservative trade risk assistant inside Sopotek Trading AI. "
+                        "A manual trade is oversized and the market is moving against it. "
+                        "Return only compact JSON with keys recommendation and reason. "
+                        "recommendation must be one of trim, exit, or hold. "
+                        "Never recommend increasing risk."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(payload_context, default=str),
+                },
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post("https://api.openai.com/v1/responses", json=payload, headers=headers) as response:
+                    data = await response.json(content_type=None)
+                    if response.status >= 400:
+                        self.logger.debug("OpenAI risk monitor request failed: %s", data)
+                        return None
+        except Exception:
+            self.logger.debug("OpenAI risk monitor request failed", exc_info=True)
+            return None
+
+        response_text = data.get("output_text")
+        if not isinstance(response_text, str) or not response_text.strip():
+            parts = []
+            for item in data.get("output", []) or []:
+                for content in item.get("content", []) or []:
+                    content_text = content.get("text")
+                    if isinstance(content_text, str) and content_text.strip():
+                        parts.append(content_text.strip())
+            response_text = "\n".join(parts)
+
+        recommendation = self._extract_json_object(response_text)
+        if not isinstance(recommendation, dict):
+            plain_text = str(response_text or "").strip()
+            return {"recommendation": "", "reason": plain_text} if plain_text else None
+
+        return {
+            "recommendation": str(recommendation.get("recommendation") or "").strip().lower(),
+            "reason": str(recommendation.get("reason") or "").strip(),
+        }
+
+    def _notify_user_trade_review(self, title, message, *, level="WARN"):
+        terminal = getattr(self, "terminal", None)
+        if terminal is not None:
+            console = getattr(terminal, "system_console", None)
+            if console is not None and hasattr(console, "log"):
+                try:
+                    console.log(str(message), level)
+                except Exception:
+                    pass
+            notifier = getattr(terminal, "_push_notification", None)
+            if callable(notifier):
+                try:
+                    notifier(
+                        title,
+                        str(message),
+                        level=level,
+                        source="trade",
+                        dedupe_seconds=2.0,
+                    )
+                except Exception:
+                    pass
+        else:
+            log_method = getattr(self.logger, "warning" if str(level).upper() == "WARN" else "info", None)
+            if callable(log_method):
+                log_method(str(message))
+
+    async def _queue_monitored_user_trade_position(
+        self,
+        *,
+        order,
+        review,
+        timeframe=None,
+    ):
+        if not isinstance(order, dict) or not bool(getattr(self, "user_trade_risk_monitor_enabled", True)):
+            return None
+
+        order_symbol = str(order.get("symbol") or "").strip().upper()
+        if not order_symbol:
+            return None
+        recommended_units = float(abs(self._safe_balance_metric(review.get("replacement_amount_units")) or 0.0))
+        actual_units = float(
+            abs(
+                self._safe_balance_metric(order.get("amount"))
+                or self._safe_balance_metric(order.get("amount_units"))
+                or 0.0
+            )
+        )
+        if actual_units <= 0 or recommended_units + 1e-9 >= actual_units:
+            return None
+
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        original_side = self._normalize_trade_side(order.get("side"))
+        entry_price = self._safe_balance_metric(
+            order.get("reference_price") or order.get("price") or order.get("avg_price") or order.get("entry_price")
+        )
+        stop_loss = self._safe_balance_metric(review.get("replacement_stop_loss") or order.get("stop_loss"))
+        risk_distance = abs(float(entry_price) - float(stop_loss)) if entry_price and stop_loss else None
+        if risk_distance is None or risk_distance <= 0:
+            risk_distance = self._safe_balance_metric((review.get("market_context") or {}).get("risk_distance"))
+        if risk_distance is None or risk_distance <= 0:
+            risk_distance = max(abs(float(entry_price or 0.0)) * 0.002, 1e-6)
+        adverse_fraction = max(
+            0.1,
+            min(1.0, float(getattr(self, "user_trade_risk_monitor_adverse_move_fraction", 0.35) or 0.35)),
+        )
+        adverse_threshold = max(float(risk_distance) * adverse_fraction, abs(float(entry_price or 0.0)) * 0.0015, 1e-6)
+
+        monitored_positions = getattr(self, "_monitored_user_trade_positions", None)
+        if not isinstance(monitored_positions, dict):
+            monitored_positions = {}
+            self._monitored_user_trade_positions = monitored_positions
+
+        key = order_id or f"{order_symbol}:{self._position_side_from_trade_side(original_side)}"
+        payload = {
+            "created_at": time.time(),
+            "symbol": order_symbol,
+            "position_side": self._position_side_from_trade_side(original_side),
+            "original_order_id": order_id or None,
+            "original_side": original_side,
+            "current_amount_units": actual_units,
+            "recommended_amount_units": recommended_units,
+            "entry_price": self._safe_balance_metric(entry_price),
+            "stop_loss": stop_loss,
+            "take_profit": self._safe_balance_metric(review.get("replacement_take_profit") or order.get("take_profit")),
+            "risk_distance": float(risk_distance),
+            "adverse_threshold": float(adverse_threshold),
+            "summary": str(review.get("summary") or "").strip(),
+            "reasons": list(review.get("monitor_reasons") or review.get("reasons") or []),
+            "market_context": dict(review.get("market_context") or {}),
+            "timeframe": str(timeframe or getattr(self, "time_frame", "1h") or "1h").strip() or "1h",
+            "warnings_sent": 0,
+            "last_warning_at": 0.0,
+            "ai_recommendation": "",
+            "ai_reason": "",
+            "ai_consulted": False,
+            "last_price": self._safe_balance_metric(entry_price),
+        }
+        monitored_positions[key] = payload
+        await self._record_trade_audit(
+            "user_trade_risk_monitoring_started",
+            status="monitoring",
+            symbol=order_symbol,
+            side=original_side,
+            order_type=order.get("type") or "market",
+            source=order.get("source"),
+            order_id=order_id or None,
+            message=str(review.get("summary") or "User trade risk monitoring started."),
+            payload={"review": dict(review or {}), "order": dict(order or {}), "monitor": dict(payload)},
+        )
+        return payload
+
+    async def _queue_pending_user_trade_review(
+        self,
+        *,
+        order,
+        review,
+        timeframe=None,
+    ):
+        if not isinstance(order, dict):
+            return None
+        order_symbol = str(order.get("symbol") or "").strip().upper()
+        if not order_symbol:
+            return None
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        key = order_id or f"{order_symbol}:{time.time()}"
+        original_side = self._normalize_trade_side(order.get("side"))
+        pending_reviews = getattr(self, "_pending_user_trade_reviews", None)
+        if not isinstance(pending_reviews, dict):
+            pending_reviews = {}
+            self._pending_user_trade_reviews = pending_reviews
+        payload = {
+            "created_at": time.time(),
+            "symbol": order_symbol,
+            "position_side": self._position_side_from_trade_side(original_side),
+            "replacement_side": self._normalize_trade_side(review.get("replacement_side") or order.get("side")),
+            "replacement_amount_units": float(
+                review.get("replacement_amount_units")
+                or abs(self._safe_balance_metric(order.get("amount")) or 0.0)
+            ),
+            "replacement_stop_loss": self._safe_balance_metric(review.get("replacement_stop_loss")),
+            "replacement_take_profit": self._safe_balance_metric(review.get("replacement_take_profit")),
+            "replacement_reason": str(review.get("summary") or "").strip(),
+            "action": str(review.get("action") or "correct").strip().lower() or "correct",
+            "timeframe": str(timeframe or getattr(self, "time_frame", "1h") or "1h").strip() or "1h",
+            "attempts": 0,
+            "last_attempt_at": 0.0,
+            "original_order_id": order_id or None,
+            "original_side": original_side,
+        }
+        pending_reviews[key] = payload
+        await self._record_trade_audit(
+            "user_trade_review_pending",
+            status="pending",
+            symbol=order_symbol,
+            side=payload["replacement_side"],
+            order_type="market",
+            source=order.get("source"),
+            order_id=order_id or None,
+            message=str(review.get("summary") or "User trade review is waiting for the live position snapshot."),
+            payload={"review": dict(review or {}), "order": dict(order or {}), "pending": dict(payload)},
+        )
+        return payload
+
+    async def _close_position_for_user_trade_review(self, position, *, amount=None):
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            raise RuntimeError("Connect a broker before the trade review can close positions.")
+
+        normalized_symbol = str((position or {}).get("symbol") or "").strip().upper()
+        close_amount = abs(
+            float(
+                self._safe_balance_metric(amount)
+                or self._safe_balance_metric((position or {}).get("amount"))
+                or 0.0
+            )
+        )
+        if not normalized_symbol or close_amount <= 0:
+            raise RuntimeError("Trade review could not resolve a valid live position to close.")
+
+        position_side = str((position or {}).get("position_side") or (position or {}).get("side") or "").strip().lower()
+        position_id = str((position or {}).get("position_id") or (position or {}).get("id") or "").strip() or None
+        result = None
+        if hasattr(broker, "close_position"):
+            try:
+                result = await broker.close_position(
+                    normalized_symbol,
+                    amount=close_amount,
+                    order_type="market",
+                    position=position,
+                    position_side=position_side or None,
+                    position_id=position_id,
+                )
+            except TypeError:
+                result = await broker.close_position(normalized_symbol, amount=close_amount)
+        if result is None:
+            close_side = "buy" if position_side in {"short", "sell"} else "sell"
+            result = await broker.create_order(
+                symbol=normalized_symbol,
+                side=close_side,
+                amount=close_amount,
+                type="market",
+                params={"positionFill": "REDUCE_ONLY"} if self.hedging_is_active(broker) else None,
+            )
+        if result is None:
+            raise RuntimeError(f"Trade review failed to close the live {normalized_symbol} position.")
+        return result
+
+    async def _process_pending_user_trade_position_reviews(self, positions):
+        pending = dict(getattr(self, "_pending_user_trade_reviews", {}) or {})
+        if not pending:
+            return
+
+        normalized_positions = []
+        for item in list(positions or []):
+            if isinstance(item, dict):
+                normalized_positions.append(dict(item))
+
+        now = time.time()
+        for key, payload in list(pending.items()):
+            created_at = float(payload.get("created_at", now) or now)
+            if (now - created_at) > 180.0:
+                self._pending_user_trade_reviews.pop(key, None)
+                await self._record_trade_audit(
+                    "user_trade_review_expired",
+                    status="expired",
+                    symbol=payload.get("symbol"),
+                    side=payload.get("replacement_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=payload.get("original_order_id"),
+                    message="User trade review expired before a matching live position was found.",
+                    payload=dict(payload),
+                )
+                continue
+
+            if (now - float(payload.get("last_attempt_at", 0.0) or 0.0)) < 5.0:
+                continue
+
+            target_symbol = str(payload.get("symbol") or "").strip().upper()
+            target_side = str(payload.get("position_side") or "").strip().lower()
+            match = next(
+                (
+                    position
+                    for position in normalized_positions
+                    if str(position.get("symbol") or "").strip().upper() == target_symbol
+                    and (
+                        not target_side
+                        or str(position.get("position_side") or position.get("side") or "").strip().lower() == target_side
+                    )
+                ),
+                None,
+            )
+            if match is None:
+                continue
+
+            payload["last_attempt_at"] = now
+            payload["attempts"] = int(payload.get("attempts", 0) or 0) + 1
+
+            try:
+                close_result = await self._close_position_for_user_trade_review(match)
+                await self._record_trade_audit(
+                    "user_trade_review_close",
+                    status=str((close_result or {}).get("status") or "submitted"),
+                    symbol=target_symbol,
+                    side=self._opposite_trade_side(payload.get("original_side")),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=(close_result or {}).get("id") if isinstance(close_result, dict) else None,
+                    message=f"Trade review closed the live {target_symbol} position before replacement.",
+                    payload={"position": dict(match), "pending": dict(payload)},
+                )
+
+                replacement = None
+                if str(payload.get("action") or "correct").strip().lower() != "close":
+                    replacement = await self.submit_trade_with_preflight(
+                        symbol=target_symbol,
+                        side=payload.get("replacement_side"),
+                        amount=float(payload.get("replacement_amount_units") or abs(float(match.get("amount", 0.0) or 0.0))),
+                        quantity_mode=None,
+                        order_type="market",
+                        price=None,
+                        stop_price=None,
+                        stop_loss=payload.get("replacement_stop_loss"),
+                        take_profit=payload.get("replacement_take_profit"),
+                        source="manual_review",
+                        strategy_name="Manual Review",
+                        reason=f"User trade auto-corrected: {payload.get('replacement_reason')}",
+                        timeframe=payload.get("timeframe"),
+                    )
+
+                self._pending_user_trade_reviews.pop(key, None)
+                summary = str(payload.get("replacement_reason") or "User trade review replaced the position.").strip()
+                if isinstance(replacement, dict):
+                    replacement["review_action"] = payload.get("action")
+                    replacement["review_reason"] = summary
+                    replacement["intervention_taken"] = True
+                    replacement["intervention_summary"] = summary
+                    replacement["review_replaced_order_id"] = payload.get("original_order_id")
+                self._notify_user_trade_review("User Trade Corrected", summary, level="WARN")
+            except Exception as exc:
+                if int(payload.get("attempts", 0) or 0) >= 3:
+                    self._pending_user_trade_reviews.pop(key, None)
+                await self._record_trade_audit(
+                    "user_trade_review_error",
+                    status="error",
+                    symbol=target_symbol,
+                    side=payload.get("replacement_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=payload.get("original_order_id"),
+                    message=str(exc),
+                    payload={"position": dict(match), "pending": dict(payload)},
+                )
+
+    async def _process_monitored_user_trade_positions(self, positions):
+        monitored = dict(getattr(self, "_monitored_user_trade_positions", {}) or {})
+        if not monitored:
+            return
+
+        normalized_positions = []
+        for item in list(positions or []):
+            if isinstance(item, dict):
+                normalized_positions.append(dict(item))
+
+        now = time.time()
+        grace_seconds = max(15.0, float(getattr(self, "user_trade_risk_monitor_grace_seconds", 60.0) or 60.0))
+        for key, payload in list(monitored.items()):
+            created_at = float(payload.get("created_at", now) or now)
+            if (now - created_at) > 900.0:
+                self._monitored_user_trade_positions.pop(key, None)
+                await self._record_trade_audit(
+                    "user_trade_risk_monitor_expired",
+                    status="expired",
+                    symbol=payload.get("symbol"),
+                    side=payload.get("original_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=payload.get("original_order_id"),
+                    message="Risk monitoring expired before the oversized user trade needed intervention.",
+                    payload=dict(payload),
+                )
+                continue
+
+            target_symbol = str(payload.get("symbol") or "").strip().upper()
+            target_side = str(payload.get("position_side") or "").strip().lower()
+            match = next(
+                (
+                    position
+                    for position in normalized_positions
+                    if str(position.get("symbol") or "").strip().upper() == target_symbol
+                    and (
+                        not target_side
+                        or str(position.get("position_side") or position.get("side") or "").strip().lower() == target_side
+                    )
+                ),
+                None,
+            )
+            if match is None:
+                continue
+
+            current_amount = float(abs(self._safe_balance_metric(match.get("amount")) or 0.0))
+            recommended_amount = float(abs(self._safe_balance_metric(payload.get("recommended_amount_units")) or 0.0))
+            if current_amount <= 0:
+                self._monitored_user_trade_positions.pop(key, None)
+                continue
+            if current_amount <= recommended_amount + 1e-9:
+                self._monitored_user_trade_positions.pop(key, None)
+                await self._record_trade_audit(
+                    "user_trade_risk_monitor_resolved",
+                    status="resolved",
+                    symbol=target_symbol,
+                    side=payload.get("original_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=payload.get("original_order_id"),
+                    message="The user trade risk exposure was reduced to the recommended size before intervention.",
+                    payload={"position": dict(match), "monitor": dict(payload)},
+                )
+                continue
+
+            entry_price = self._safe_balance_metric(match.get("entry_price") or payload.get("entry_price"))
+            current_price = self._safe_balance_metric(
+                match.get("mark_price")
+                or match.get("market_price")
+                or match.get("price")
+                or payload.get("last_price")
+            )
+            if current_price is None or current_price <= 0:
+                current_price = self._safe_balance_metric((payload.get("market_context") or {}).get("latest_price"))
+            if entry_price is None or entry_price <= 0 or current_price is None or current_price <= 0:
+                continue
+
+            adverse_distance = (
+                max(0.0, float(entry_price) - float(current_price))
+                if target_side in {"long", "buy"}
+                else max(0.0, float(current_price) - float(entry_price))
+            )
+            payload["last_price"] = float(current_price)
+            adverse_threshold = max(float(payload.get("adverse_threshold") or 0.0), abs(float(entry_price)) * 0.0015, 1e-6)
+            if adverse_distance + 1e-9 < adverse_threshold:
+                continue
+
+            if (now - created_at) < grace_seconds:
+                if (now - float(payload.get("last_warning_at", 0.0) or 0.0)) >= 15.0:
+                    payload["last_warning_at"] = now
+                    payload["warnings_sent"] = int(payload.get("warnings_sent", 0) or 0) + 1
+                    self._notify_user_trade_review(
+                        "User Trade Risk Watch",
+                        (
+                            f"{str(payload.get('summary') or '').strip()} "
+                            f"The live {target_symbol} position is still oversized and has moved "
+                            f"{adverse_distance:.4f} against the entry. "
+                            "If the exposure is not reduced before the grace window expires, the system will step in."
+                        ).strip(),
+                        level="WARN",
+                    )
+                continue
+
+            ai_note = None
+            if not bool(payload.get("ai_consulted")):
+                ai_note = await self._recommend_user_trade_monitor_action_with_openai(
+                    monitor=payload,
+                    position=match,
+                    current_price=current_price,
+                    adverse_distance=adverse_distance,
+                )
+                payload["ai_consulted"] = True
+                if isinstance(ai_note, dict):
+                    payload["ai_recommendation"] = str(ai_note.get("recommendation") or "").strip().lower()
+                    payload["ai_reason"] = str(ai_note.get("reason") or "").strip()
+            else:
+                ai_note = {
+                    "recommendation": str(payload.get("ai_recommendation") or "").strip().lower(),
+                    "reason": str(payload.get("ai_reason") or "").strip(),
+                }
+
+            base_action = "close" if recommended_amount <= 0 else "trim"
+            ai_recommendation = str((ai_note or {}).get("recommendation") or "").strip().lower()
+            effective_action = "close" if ai_recommendation == "exit" else base_action
+            intervention_amount = current_amount if effective_action == "close" else max(0.0, current_amount - recommended_amount)
+            if intervention_amount <= 1e-9:
+                self._monitored_user_trade_positions.pop(key, None)
+                continue
+
+            try:
+                close_result = await self._close_position_for_user_trade_review(match, amount=intervention_amount)
+                self._monitored_user_trade_positions.pop(key, None)
+                ai_reason = str((ai_note or {}).get("reason") or "").strip()
+                summary = (
+                    f"{str(payload.get('summary') or '').strip()} "
+                    f"The market moved {adverse_distance:.4f} against the entry while the position remained oversized."
+                ).strip()
+                if effective_action == "trim" and recommended_amount > 0:
+                    summary = (
+                        f"{summary} The system reduced the position from {current_amount:.6f} to "
+                        f"{recommended_amount:.6f} units to bring it back inside the recommended risk."
+                    ).strip()
+                else:
+                    summary = f"{summary} The system closed the full position to stop further unmanaged risk.".strip()
+                if ai_reason:
+                    summary = f"{summary} ChatGPT risk note: {ai_reason}".strip()
+
+                await self._record_trade_audit(
+                    "user_trade_risk_monitor_action",
+                    status=str((close_result or {}).get("status") or "submitted"),
+                    symbol=target_symbol,
+                    side=payload.get("original_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=(close_result or {}).get("id") if isinstance(close_result, dict) else None,
+                    message=summary,
+                    payload={
+                        "position": dict(match),
+                        "monitor": dict(payload),
+                        "close_result": dict(close_result) if isinstance(close_result, dict) else close_result,
+                        "effective_action": effective_action,
+                    },
+                )
+                self._notify_user_trade_review("User Trade Risk Controlled", summary, level="WARN")
+            except Exception as exc:
+                await self._record_trade_audit(
+                    "user_trade_risk_monitor_error",
+                    status="error",
+                    symbol=target_symbol,
+                    side=payload.get("original_side"),
+                    order_type="market",
+                    source="manual_review",
+                    order_id=payload.get("original_order_id"),
+                    message=str(exc),
+                    payload={"position": dict(match), "monitor": dict(payload)},
+                )
+
+    async def _process_user_trade_position_safety(self, positions):
+        await self._process_pending_user_trade_position_reviews(positions)
+        await self._process_monitored_user_trade_positions(positions)
+
+    def queue_pending_user_trade_position_reviews(self, positions):
+        if not bool(getattr(self, "user_trade_autocorrect_enabled", True)):
+            return None
+        if not bool(getattr(self, "_pending_user_trade_reviews", {})) and not bool(
+            getattr(self, "_monitored_user_trade_positions", {})
+        ):
+            return None
+        task = getattr(self, "_pending_user_trade_review_task", None)
+        if task is not None and not task.done():
+            return task
+        runner = self._process_user_trade_position_safety(list(positions or []))
+        create_task = getattr(self, "_create_task", None)
+        if callable(create_task):
+            self._pending_user_trade_review_task = create_task(runner, "pending_user_trade_review")
+        else:
+            self._pending_user_trade_review_task = asyncio.create_task(runner)
+        return self._pending_user_trade_review_task
+
+    async def _handle_user_trade_review(
+        self,
+        order,
+        *,
+        symbol,
+        side,
+        order_type,
+        price=None,
+        stop_price=None,
+        stop_loss=None,
+        take_profit=None,
+        source=None,
+        timeframe=None,
+    ):
+        if not isinstance(order, dict) or not bool(getattr(self, "user_trade_autocorrect_enabled", True)):
+            return order
+        if not self._is_user_directed_trade_source(source):
+            return order
+
+        order_symbol = str(order.get("symbol") or symbol or "").strip().upper()
+        actual_amount = abs(
+            float(
+                self._safe_balance_metric(order.get("amount"))
+                or self._safe_balance_metric(order.get("amount_units"))
+                or 0.0
+            )
+        )
+        reference_price = (
+            self._safe_balance_metric(order.get("price"))
+            or self._safe_balance_metric(order.get("reference_price"))
+            or self._safe_balance_metric(price)
+        )
+        review = await self._assess_user_trade_review(
+            symbol=order_symbol,
+            side=side,
+            amount_units=actual_amount,
+            reference_price=reference_price,
+            stop_loss=order.get("stop_loss", stop_loss),
+            take_profit=order.get("take_profit", take_profit),
+            timeframe=timeframe,
+        )
+        order["review_action"] = str(review.get("action") or "keep")
+        order["review_reason"] = str(review.get("summary") or "").strip()
+        order["review_reasons"] = list(review.get("reasons") or [])
+        order["risk_monitoring_active"] = False
+
+        if not review.get("is_bad") and not review.get("monitor_only"):
+            await self._record_trade_audit(
+                "user_trade_review_pass",
+                status="ok",
+                symbol=order_symbol,
+                side=self._normalize_trade_side(order.get("side") or side),
+                order_type=order.get("type") or order_type,
+                source=source,
+                order_id=order.get("id") or order.get("order_id"),
+                message="User-directed trade review approved the order.",
+                payload={"review": dict(review), "order": dict(order)},
+            )
+            return order
+
+        if review.get("monitor_only"):
+            monitor = await self._queue_monitored_user_trade_position(
+                order=order,
+                review=review,
+                timeframe=timeframe,
+            )
+            order["risk_monitoring_active"] = monitor is not None
+            order["intervention_pending"] = False
+            order["intervention_taken"] = False
+            order["intervention_summary"] = str(review.get("summary") or "").strip()
+            await self._record_trade_audit(
+                "user_trade_risk_warning",
+                status="monitoring",
+                symbol=order_symbol,
+                side=self._normalize_trade_side(order.get("side") or side),
+                order_type=order.get("type") or order_type,
+                source=source,
+                order_id=order.get("id") or order.get("order_id"),
+                message=str(review.get("summary") or "User-directed trade is oversized and is now being monitored."),
+                payload={"review": dict(review), "order": dict(order), "monitor": dict(monitor or {})},
+            )
+            if monitor is not None:
+                self._notify_user_trade_review(
+                    "User Trade Risk Warning",
+                    (
+                        f"{str(review.get('summary') or '').strip()} "
+                        f"The system is watching this position closely and will step in if price keeps moving against it."
+                    ).strip(),
+                    level="WARN",
+                )
+            return order
+
+        await self._record_trade_audit(
+            "user_trade_review_flagged",
+            status="flagged",
+            symbol=order_symbol,
+            side=self._normalize_trade_side(order.get("side") or side),
+            order_type=order.get("type") or order_type,
+            source=source,
+            order_id=order.get("id") or order.get("order_id"),
+            message=str(review.get("summary") or "User-directed trade review flagged the trade."),
+            payload={"review": dict(review), "order": dict(order)},
+        )
+
+        normalized_status = str(order.get("status") or "").strip().lower()
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        cancelable_order = bool(order_id) and (
+            normalized_status in {"open", "pending", "new", "accepted"}
+            or (str(order_type or "market").strip().lower() != "market" and normalized_status in {"submitted", "placed"})
+        )
+
+        broker = getattr(self, "broker", None)
+        if cancelable_order and broker is not None and hasattr(broker, "cancel_order"):
+            try:
+                try:
+                    await broker.cancel_order(order_id, symbol=order_symbol)
+                except TypeError:
+                    await broker.cancel_order(order_id)
+                replacement = None
+                if str(review.get("action") or "correct").strip().lower() != "close":
+                    replacement = await self.submit_trade_with_preflight(
+                        symbol=order_symbol,
+                        side=review.get("replacement_side"),
+                        amount=float(review.get("replacement_amount_units") or actual_amount),
+                        quantity_mode=None,
+                        order_type=order_type,
+                        price=order.get("price", price),
+                        stop_price=order.get("stop_price", stop_price),
+                        stop_loss=review.get("replacement_stop_loss"),
+                        take_profit=review.get("replacement_take_profit"),
+                        source="manual_review",
+                        strategy_name="Manual Review",
+                        reason=f"User trade auto-corrected: {review.get('summary')}",
+                        timeframe=timeframe,
+                    )
+                if isinstance(replacement, dict):
+                    replacement["review_action"] = review.get("action")
+                    replacement["review_reason"] = str(review.get("summary") or "").strip()
+                    replacement["review_reasons"] = list(review.get("reasons") or [])
+                    replacement["intervention_taken"] = True
+                    replacement["intervention_summary"] = str(review.get("summary") or "").strip()
+                    replacement["review_replaced_order_id"] = order_id or None
+                else:
+                    order["status"] = "canceled"
+                    order["intervention_taken"] = True
+                    order["intervention_pending"] = False
+                    order["intervention_summary"] = str(review.get("summary") or "").strip()
+                    order["review_replaced_order_id"] = order_id or None
+                self._notify_user_trade_review(
+                    "User Trade Corrected",
+                    str(review.get("summary") or "The user-directed order was canceled and replaced with a safer trade."),
+                    level="WARN",
+                )
+                return replacement if replacement is not None else order
+            except Exception as exc:
+                await self._record_trade_audit(
+                    "user_trade_review_cancel_error",
+                    status="error",
+                    symbol=order_symbol,
+                    side=self._normalize_trade_side(order.get("side") or side),
+                    order_type=order.get("type") or order_type,
+                    source=source,
+                    order_id=order_id or None,
+                    message=str(exc),
+                    payload={"review": dict(review), "order": dict(order)},
+                )
+
+        pending = await self._queue_pending_user_trade_review(
+            order=order,
+            review=review,
+            timeframe=timeframe,
+        )
+        order["intervention_pending"] = pending is not None
+        order["intervention_taken"] = False
+        order["intervention_summary"] = str(review.get("summary") or "").strip()
+        self._notify_user_trade_review(
+            "User Trade Flagged",
+            (
+                f"{str(review.get('summary') or '').strip()} "
+                "The system will close and replace the position as soon as the live position snapshot is available."
+            ).strip(),
+            level="WARN",
+        )
+        return order
 
     def market_chat_position_summary(self, open_window=True):
         terminal = getattr(self, "terminal", None)
@@ -6013,6 +7446,10 @@ class AppController(QMainWindow):
             requested_amount = order.get("requested_amount", amount)
             sizing_summary = str(order.get("sizing_summary") or "").strip()
             ai_sizing_reason = str(order.get("ai_sizing_reason") or "").strip()
+            final_symbol = str(order.get("symbol") or symbol or "").strip().upper() or str(symbol or "").strip().upper()
+            final_side = str(order.get("side") or side or "").strip().upper() or str(side or "").strip().upper()
+            final_type = str(order.get("type") or resolved_type or "").strip().replace("-", "_").replace(" ", "_").upper()
+            review_summary = str(order.get("intervention_summary") or order.get("review_reason") or "").strip()
             requested_line = (
                 f"\nRequested Amount: {requested_amount} {amount_mode}"
                 if bool(order.get("size_adjusted"))
@@ -6020,17 +7457,25 @@ class AppController(QMainWindow):
             )
             sizing_line = f"\nSizing: {sizing_summary}" if sizing_summary else ""
             ai_line = f"\nChatGPT Size Note: {ai_sizing_reason}" if ai_sizing_reason else ""
+            review_line = ""
+            if review_summary:
+                if bool(order.get("risk_monitoring_active")) and not bool(order.get("intervention_pending")):
+                    prefix = "Risk Watch"
+                else:
+                    prefix = "Auto-Review Pending" if bool(order.get("intervention_pending")) else "Auto-Review"
+                review_line = f"\n{prefix}: {review_summary}"
             return (
                 f"Trade command executed.\n"
                 f"Status: {status}\n"
-                f"Symbol: {symbol.upper()}\n"
-                f"Side: {side.upper()}\n"
+                f"Symbol: {final_symbol}\n"
+                f"Side: {final_side}\n"
                 f"Amount: {applied_amount} {amount_mode}\n"
-                f"Type: {resolved_type.upper()}\n"
+                f"Type: {final_type}\n"
                 f"Order ID: {order_id}"
                 f"{requested_line}"
                 f"{sizing_line}"
                 f"{ai_line}"
+                f"{review_line}"
             )
 
         market_symbol = self._resolve_market_chat_symbol(question)
@@ -9372,6 +10817,10 @@ class AppController(QMainWindow):
             if ticker_task is not None and not ticker_task.done():
                 _run_cleanup_step("cancel ticker task", ticker_task.cancel)
             self._ticker_task = None
+            recovery_task = getattr(self, "_market_stream_recovery_task", None)
+            if recovery_task is not None and not recovery_task.done():
+                _run_cleanup_step("cancel market stream recovery task", recovery_task.cancel)
+            self._market_stream_recovery_task = None
 
             ws_task = getattr(self, "_ws_task", None)
             if ws_task is not None and not ws_task.done():
@@ -9425,7 +10874,38 @@ class AppController(QMainWindow):
             return "Running"
         if self._ticker_task and not self._ticker_task.done():
             return "Polling"
+        if self._schedule_polling_market_stream_recovery():
+            return "Restarting"
         return "Stopped"
+
+    def _schedule_polling_market_stream_recovery(self):
+        exchange = self._active_exchange_code()
+        if exchange not in {"oanda", "stellar"}:
+            return False
+        if not bool(getattr(self, "connected", False)) or getattr(self, "broker", None) is None:
+            return False
+        ticker_task = getattr(self, "_ticker_task", None)
+        if ticker_task is not None and not ticker_task.done():
+            return False
+
+        recovery_task = getattr(self, "_market_stream_recovery_task", None)
+        if recovery_task is not None and not recovery_task.done():
+            return True
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        self.logger.warning(
+            "Polling market data task is not active for %s; scheduling recovery.",
+            exchange.upper(),
+        )
+        self._market_stream_recovery_task = self._create_task(
+            self._start_ticker_polling(),
+            "ticker_poll_recovery",
+        )
+        return True
 
     async def logout(self):
         try:

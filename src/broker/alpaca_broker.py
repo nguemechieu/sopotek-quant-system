@@ -36,12 +36,9 @@ class AlpacaBroker(BaseBroker):
         self._connected = False
 
     def supported_market_venues(self):
+        # Report the venue types this broker adapter can handle.
+        # Credentials are validated when the API client is initialized.
         return ["auto", "spot"]
-
-        if not self.api_key:
-            raise ValueError("Alpaca API key is required")
-        if not self.secret:
-            raise ValueError("Alpaca secret is required")
 
     # =================================
     # INTERNALS
@@ -53,6 +50,11 @@ class AlpacaBroker(BaseBroker):
 
         if tradeapi is None:
             raise RuntimeError("alpaca_trade_api is not installed")
+
+        if not self.api_key:
+            raise ValueError("Alpaca API key is required")
+        if not self.secret:
+            raise ValueError("Alpaca secret is required")
 
         self.api = tradeapi.REST(
             self.api_key,

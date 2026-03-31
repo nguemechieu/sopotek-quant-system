@@ -141,6 +141,34 @@ class ExecutionManager:
             return markets.get(symbol)
         return None
 
+    def _uses_inventory_balance_checks(self, order, market=None, balance=None):
+        order = order or {}
+        market = market if isinstance(market, dict) else {}
+        exchange_name = str(order.get("exchange") or getattr(self.broker, "exchange_name", "") or "").strip().lower()
+        if exchange_name == "oanda":
+            return False
+
+        requested_mode = str(order.get("requested_quantity_mode") or "").strip().lower()
+        if requested_mode == "lots":
+            return False
+
+        market_type = str(
+            market.get("type")
+            or market.get("market_type")
+            or market.get("venue")
+            or ""
+        ).strip().lower()
+        if market.get("otc") or market_type in {"otc", "margin", "swap", "future", "option", "derivative"}:
+            return False
+        if bool(market.get("contract")):
+            return False
+
+        raw_balance = balance.get("raw") if isinstance(balance, dict) else {}
+        if isinstance(raw_balance, dict) and market.get("otc"):
+            return False
+
+        return True
+
     def _apply_amount_precision(self, symbol, amount):
         exchange = getattr(self.broker, "exchange", None)
         if exchange and hasattr(exchange, "amount_to_precision"):
@@ -309,6 +337,7 @@ class ExecutionManager:
             "symbol": execution.get("symbol") or submitted_order.get("symbol"),
             "side": side,
             "source": str(execution.get("source") or submitted_order.get("source") or "bot").strip().lower() or "bot",
+            "exchange": execution.get("exchange") or submitted_order.get("exchange") or getattr(self.broker, "exchange_name", None),
             "price": actual_price,
             "size": size,
             "filled_size": filled_size,
@@ -340,6 +369,13 @@ class ExecutionManager:
             "execution_strategy": execution_strategy,
             "execution_quality": execution_quality if isinstance(execution_quality, dict) else {},
             "timeframe": execution.get("timeframe") or submitted_order.get("timeframe"),
+            "decision_id": execution.get("decision_id") or submitted_order.get("decision_id"),
+            "signal_timestamp": execution.get("signal_timestamp") or submitted_order.get("signal_timestamp"),
+            "feature_snapshot": execution.get("feature_snapshot") or submitted_order.get("feature_snapshot"),
+            "feature_version": execution.get("feature_version") or submitted_order.get("feature_version"),
+            "regime_snapshot": execution.get("regime_snapshot") or submitted_order.get("regime_snapshot"),
+            "market_regime": execution.get("market_regime") or submitted_order.get("market_regime"),
+            "volatility_regime": execution.get("volatility_regime") or submitted_order.get("volatility_regime"),
             "signal_source_agent": execution.get("signal_source_agent") or submitted_order.get("signal_source_agent"),
             "consensus_status": execution.get("consensus_status") or submitted_order.get("consensus_status"),
             "adaptive_weight": execution.get("adaptive_weight", submitted_order.get("adaptive_weight")),
@@ -380,6 +416,10 @@ class ExecutionManager:
             payload.get("fee"),
             payload.get("timestamp"),
         )
+
+    def _bus_has_subscribers(self, event_type):
+        subscribers = getattr(self.bus, "subscribers", {}) if self.bus is not None else {}
+        return bool(subscribers.get(event_type) or subscribers.get("*"))
 
     async def _persist_trade_update(self, payload):
         if self.trade_repository is not None:
@@ -424,6 +464,17 @@ class ExecutionManager:
             except Exception as exc:
                 self.logger.debug("Trade notification failed for %s: %s", payload.get("symbol"), exc)
 
+    async def _publish_execution_report(self, payload, execution, submitted_order):
+        if not self._bus_has_subscribers(EventType.EXECUTION_REPORT):
+            return
+
+        report = dict(payload or {})
+        if isinstance(execution, dict):
+            report["raw_execution"] = dict(execution)
+        if isinstance(submitted_order, dict):
+            report["submitted_order"] = dict(submitted_order)
+        await self.bus.publish(Event(EventType.EXECUTION_REPORT, report))
+
     async def _publish_fill_delta(self, payload, tracker_state):
         filled_size = max(self._safe_float(payload.get("filled_size"), 0.0), 0.0)
         previous_filled = max(self._safe_float(tracker_state.get("filled_size"), 0.0), 0.0)
@@ -459,6 +510,7 @@ class ExecutionManager:
         fingerprint = self._payload_fingerprint(payload)
         if fingerprint != tracker_state.get("fingerprint"):
             await self._persist_trade_update(payload)
+            await self._publish_execution_report(payload, execution, submitted_order)
 
         if order_id:
             self._tracked_orders[order_id] = {
@@ -556,18 +608,26 @@ class ExecutionManager:
         amount = float(order["amount"])
         base_currency, quote_currency = (symbol.split("/", 1) + [None])[:2]
 
+        balance_snapshot = {}
         balance = {}
         if hasattr(self.broker, "fetch_balance"):
             try:
-                balance = self._extract_free_balances(await self.broker.fetch_balance())
+                balance_snapshot = await self.broker.fetch_balance()
+                balance = self._extract_free_balances(balance_snapshot)
             except Exception as exc:
                 self.logger.debug("Balance fetch failed for %s: %s", symbol, exc)
 
+        enforce_inventory_checks = self._uses_inventory_balance_checks(
+            order,
+            market=market,
+            balance=balance_snapshot,
+        )
+
         available_quote = None
         available_base = None
-        if quote_currency:
+        if quote_currency and enforce_inventory_checks:
             available_quote = float(balance.get(quote_currency, 0) or 0)
-        if base_currency:
+        if base_currency and enforce_inventory_checks:
             available_base = float(balance.get(base_currency, 0) or 0)
 
         if side == "buy" and price and available_quote is not None:
@@ -666,6 +726,7 @@ class ExecutionManager:
             "symbol": symbol,
             "side": str(side).lower(),
             "source": str(order.get("source") or "bot").strip().lower() or "bot",
+            "exchange": order.get("exchange") or getattr(self.broker, "exchange_name", None),
             "amount": amount,
             "type": order_type,
         }
@@ -688,6 +749,13 @@ class ExecutionManager:
             "pnl",
             "execution_strategy",
             "timeframe",
+            "decision_id",
+            "signal_timestamp",
+            "feature_snapshot",
+            "feature_version",
+            "regime_snapshot",
+            "market_regime",
+            "volatility_regime",
             "signal_source_agent",
             "consensus_status",
             "adaptive_weight",

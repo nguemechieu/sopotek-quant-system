@@ -38,6 +38,29 @@ def test_refresh_positions_async_uses_broker_then_updates_views():
     assert events["analysis"] == 1
 
 
+def test_refresh_positions_async_queues_pending_user_trade_reviews():
+    events = {"queued": None}
+
+    async def fetch_positions():
+        return [{"symbol": "EUR/USD", "amount": 1.0, "position_side": "long"}]
+
+    fake = SimpleNamespace(
+        _ui_shutting_down=False,
+        controller=SimpleNamespace(
+            broker=SimpleNamespace(fetch_positions=fetch_positions),
+            queue_pending_user_trade_position_reviews=lambda positions: events.__setitem__("queued", list(positions)),
+        ),
+        logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+        _portfolio_positions_snapshot=lambda: [],
+        _populate_positions_table=lambda positions: None,
+        _refresh_position_analysis_window=lambda: None,
+    )
+
+    asyncio.run(refresh_positions_async(fake))
+
+    assert events["queued"] == [{"symbol": "EUR/USD", "amount": 1.0, "position_side": "long"}]
+
+
 def test_refresh_open_orders_async_uses_snapshot_api_when_available():
     events = {"orders": None}
 
