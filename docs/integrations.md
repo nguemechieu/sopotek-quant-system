@@ -22,11 +22,26 @@ Trade activity notifications can include:
 - timestamp
 
 ### Telegram Keyboard And Commands
-The bot now supports a persistent keyboard and typed commands.
+The bot now supports a persistent section-based keyboard, inline menu cards, and typed commands.
 
-Core commands include:
-- `/help`
-- `/commands`
+Keyboard sections include:
+- `Overview`
+- `Portfolio`
+- `Market Intel`
+- `Performance`
+- `Workspace`
+- `Controls`
+- `Journal`
+- `Screenshot`
+- `Help`
+- `Quick Brief`
+
+Core commands remain available for compatibility:
+- `/menu`
+- `/portfolio`
+- `/markets`
+- `/workspace`
+- `/controls`
 - `/status`
 - `/balances`
 - `/positions`
@@ -40,7 +55,7 @@ Core commands include:
 - `/ask <question>`
 - `/chat <question>`
 
-The keyboard is designed to expose the common remote workflow without forcing the operator to type everything manually.
+Remote trading state changes from Telegram stay confirmation-gated through inline callbacks.
 
 ### Conversational Reply Behavior
 Telegram is no longer limited to slash-command prompts. Plain text messages can also be forwarded to the OpenAI-backed app context flow, which means the bot can answer natural questions about:
@@ -52,6 +67,14 @@ Telegram is no longer limited to slash-command prompts. Plain text messages can 
 - recommendations
 - app status
 - market context
+
+### Runtime Translation
+Language changes now reach:
+
+- visible dashboard and terminal labels
+- translated runtime table and tree content
+- rich-text detail panes rendered in the workspace
+- dynamic Telegram summaries and remote console responses
 
 ## OpenAI
 

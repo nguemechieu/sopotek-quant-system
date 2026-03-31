@@ -8,9 +8,9 @@ Sopotek Trading AI is a desktop trading workstation built by Sopotek Corporation
 
 ## Version And Status
 
-- Package version: `0.1.0`
+- Package version: `1.0.0`
 - Company: `Sopotek Corporation`
-- Product state: feature-rich early production-style desktop build
+- Product state: first publishable desktop release with a menu-driven Telegram remote console
 - Safety posture: live-capable, but still best validated through `paper`, `practice`, or `sandbox` sessions before any meaningful live capital use
 
 ## What The App Includes
@@ -38,8 +38,10 @@ Sopotek Trading AI is a desktop trading workstation built by Sopotek Corporation
 
 ### Remote Workflow
 - Receive Telegram notifications for trade activity.
-- Use Telegram commands and keyboard shortcuts for status, balances, screenshots, chart captures, recommendations, and position analysis.
+- Use the menu-driven Telegram console with `Overview`, `Portfolio`, `Market Intel`, `Performance`, `Workspace`, and `Controls` panels.
+- Keep using slash commands when needed for compatibility, including status, balances, screenshots, chart captures, recommendations, and position analysis.
 - Ask Sopotek Pilot questions inside the app or through Telegram.
+- Runtime translation now reaches dynamic summaries and rich-text detail views in addition to static labels, so translated sessions stay consistent behind the scenes.
 
 ### Suggested First Validation Path
 1. Launch in `paper`, `practice`, or `sandbox`.
@@ -148,6 +150,7 @@ The bot can handle:
 - status, balances, positions, and open orders
 - screenshots and chart screenshots
 - recommendation and performance summaries
+- menu-driven inline navigation and confirmation-gated remote controls
 - plain-text Sopotek Pilot conversations in addition to slash commands
 
 ### Sopotek Pilot

@@ -4,7 +4,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-
 from backtesting.backtest_engine import BacktestEngine
 from backtesting.experiment_tracker import ExperimentTracker
 from backtesting.report_generator import ReportGenerator
@@ -22,7 +21,7 @@ class StrategyOptimizer:
             initial_balance: Starting equity for each backtest run.
         """
         self.strategy = strategy
-        self.initial_balance:float = float(initial_balance) if initial_balance is not None else 10000.0
+        self.initial_balance: float = float(initial_balance) if initial_balance is not None else 10000.0
         self.experiment_tracker = ExperimentTracker()
 
     def _resolve_strategy(self, strategy_name=None):

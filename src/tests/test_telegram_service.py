@@ -88,15 +88,20 @@ class RecordingTelegramService(TelegramService):
     def __init__(self, controller):
         super().__init__(controller=controller, logger=DummyLogger(), bot_token="token", chat_id="1", enabled=True)
         self.messages = []
+        self.edited_messages = []
         self.photos = []
         self.callback_answers = []
 
     async def send_message(self, text, include_keyboard=False, reply_markup=None):
-        self.messages.append((str(text), bool(include_keyboard), reply_markup))
+        self.messages.append((self._localize_text(text), bool(include_keyboard), reply_markup))
+        return True
+
+    async def _edit_message(self, chat_id, message_id, text, reply_markup=None):
+        self.edited_messages.append((str(chat_id), message_id, self._localize_text(text), reply_markup))
         return True
 
     async def send_photo(self, file_path, caption=None):
-        self.photos.append((file_path, caption))
+        self.photos.append((file_path, self._localize_text(caption)))
         return True
 
     async def _answer_callback_query(self, callback_id, text=""):
@@ -114,13 +119,14 @@ def build_update(text):
     }
 
 
-def build_callback_update(data, callback_id="cb-1"):
+def build_callback_update(data, callback_id="cb-1", message_id=99):
     return {
         "update_id": 2,
         "callback_query": {
             "id": callback_id,
             "data": data,
             "message": {
+                "message_id": message_id,
                 "chat": {"id": "1"},
             },
         },
@@ -142,7 +148,10 @@ def test_chart_command_opens_chart():
     asyncio.run(service._handle_update(build_update("/chart BTC/USDT 15m")))
 
     assert controller.open_chart_calls == [("BTC/USDT", "15m")]
-    assert service.messages[-1] == ("opened BTC/USDT 15m", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "opened BTC/USDT 15m"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("markets")
 
 
 def test_chartshot_command_captures_and_sends_photo():
@@ -173,7 +182,8 @@ def test_help_command_requests_keyboard():
 
     assert service.messages
     assert service.messages[-1][1] is True
-    assert "/commands" in service.messages[-1][0]
+    assert "/menu" in service.messages[-1][0]
+    assert "Keyboard sections:" in service.messages[-1][0]
     assert "/trade ..." not in service.messages[-1][0]
     assert "/chart SYMBOL" not in service.messages[-1][0]
 
@@ -185,16 +195,44 @@ def test_command_keyboard_contains_core_buttons():
 
     assert keyboard["resize_keyboard"] is True
     flat_labels = [button["text"] for row in keyboard["keyboard"] for button in row]
-    assert "/status" in flat_labels
-    assert "/screenshot" in flat_labels
-    assert "/management" in flat_labels
-    assert "/history" in flat_labels
-    assert "/chartshot" in flat_labels
-    assert "/settings" in flat_labels
-    assert "/refreshmarkets" in flat_labels
-    assert "/autotradeon" in flat_labels
+    assert "Overview" in flat_labels
+    assert "Portfolio" in flat_labels
+    assert "Market Intel" in flat_labels
+    assert "Performance" in flat_labels
+    assert "Workspace" in flat_labels
+    assert "Controls" in flat_labels
+    assert "Screenshot" in flat_labels
+    assert "Quick Brief" in flat_labels
     assert all("EUR/USD" not in label for label in flat_labels)
     assert all("trade buy" not in label.lower() for label in flat_labels)
+
+
+def test_menu_command_opens_overview_panel():
+    controller = DummyController()
+    service = RecordingTelegramService(controller)
+
+    asyncio.run(service._handle_update(build_update("/menu")))
+
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert "Sopotek Pilot Remote Console" in message
+    assert "status" in message
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("overview")
+
+
+def test_keyboard_alias_opens_portfolio_panel():
+    controller = DummyController()
+    service = RecordingTelegramService(controller)
+
+    asyncio.run(service._handle_update(build_update("Portfolio")))
+
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert "Portfolio Console" in message
+    assert "balances" in message
+    assert "positions" in message
+    assert "orders" in message
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("portfolio")
 
 
 def test_management_command_returns_management_summary():
@@ -203,7 +241,10 @@ def test_management_command_returns_management_summary():
 
     asyncio.run(service._handle_update(build_update("/management")))
 
-    assert service.messages[-1] == ("management", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "management"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_history_command_returns_trade_history_summary():
@@ -212,7 +253,10 @@ def test_history_command_returns_trade_history_summary():
 
     asyncio.run(service._handle_update(build_update("/history")))
 
-    assert service.messages[-1] == ("history:300:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "history:300:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("performance")
 
 
 def test_settings_command_returns_rich_settings_response():
@@ -222,7 +266,10 @@ def test_settings_command_returns_rich_settings_response():
     asyncio.run(service._handle_update(build_update("/settings")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("settings:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "settings:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_notify_trade_includes_rejection_reason():
@@ -245,9 +292,10 @@ def test_notify_trade_includes_rejection_reason():
         )
     )
 
-    text, _include_keyboard, _reply_markup = service.messages[-1]
+    text, _include_keyboard, reply_markup = service.messages[-1]
     assert "Status: <b>REJECTED</b>" in text
     assert "Reason: <code>Live trade blocked: candle data for EUR/PLN 1h is stale (unknown old).</code>" in text
+    assert reply_markup == service._menu_markup("portfolio")
 
 
 def test_health_command_returns_rich_health_response():
@@ -257,7 +305,10 @@ def test_health_command_returns_rich_health_response():
     asyncio.run(service._handle_update(build_update("/health")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("health:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "health:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_quantpm_command_returns_rich_quant_summary():
@@ -267,7 +318,10 @@ def test_quantpm_command_returns_rich_quant_summary():
     asyncio.run(service._handle_update(build_update("/quantpm")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("quantpm:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "quantpm:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_journal_button_returns_journal_summary():
@@ -277,7 +331,10 @@ def test_journal_button_returns_journal_summary():
     asyncio.run(service._handle_update(build_update("/journal")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("journal:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "journal:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_review_button_returns_review_summary():
@@ -287,7 +344,10 @@ def test_review_button_returns_review_summary():
     asyncio.run(service._handle_update(build_update("/review")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("review:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "review:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_logs_button_returns_log_summary():
@@ -297,7 +357,10 @@ def test_logs_button_returns_log_summary():
     asyncio.run(service._handle_update(build_update("/logs")))
 
     assert controller.direct_actions == []
-    assert service.messages[-1] == ("logs:True", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "logs:True"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("workspace")
 
 
 def test_generic_refresh_action_still_routes_to_direct_action_handler():
@@ -307,7 +370,46 @@ def test_generic_refresh_action_still_routes_to_direct_action_handler():
     asyncio.run(service._handle_update(build_update("/refreshmarkets")))
 
     assert controller.direct_actions[-1] == "refresh markets"
-    assert service.messages[-1] == ("direct:refresh markets", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "direct:refresh markets"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("controls")
+
+
+def test_view_callback_edits_existing_message_into_portfolio_panel():
+    controller = DummyController()
+    service = RecordingTelegramService(controller)
+
+    asyncio.run(service._handle_update(build_callback_update("view:portfolio")))
+
+    assert service.callback_answers[-1] == ("cb-1", "Updated.")
+    assert service.edited_messages
+    chat_id, message_id, text, reply_markup = service.edited_messages[-1]
+    assert chat_id == "1"
+    assert message_id == 99
+    assert "Portfolio Console" in text
+    assert reply_markup == service._menu_markup("portfolio")
+
+
+def test_control_confirmation_callback_requires_confirm_before_action():
+    controller = DummyController()
+    service = RecordingTelegramService(controller)
+
+    asyncio.run(service._handle_update(build_callback_update("control:prompt:killswitch", message_id=101)))
+
+    assert service.callback_answers[-1] == ("cb-1", "Confirm or cancel.")
+    assert service.edited_messages
+    _chat_id, _message_id, text, reply_markup = service.edited_messages[-1]
+    assert "Confirm Remote Control" in text
+    confirm_callback = reply_markup["inline_keyboard"][0][0]["callback_data"]
+
+    asyncio.run(service._handle_update(build_callback_update(confirm_callback, callback_id="cb-2", message_id=101)))
+
+    assert controller.direct_actions[-1] == "activate kill switch"
+    assert service.callback_answers[-1] == ("cb-2", "Kill switch request sent.")
+    _chat_id, _message_id, text, reply_markup = service.edited_messages[-1]
+    assert text == "direct:activate kill switch"
+    assert reply_markup == service._menu_markup("controls")
 
 
 def test_plain_text_message_gets_sopotek_pilot_reply():
@@ -318,7 +420,20 @@ def test_plain_text_message_gets_sopotek_pilot_reply():
 
     assert controller.ask_calls
     assert controller.ask_calls[-1][0] == "What is my current status?"
-    assert service.messages[-1] == ("answer:What is my current status?", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "answer:What is my current status?"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("overview")
+
+
+def test_controller_runtime_translation_is_applied_to_outgoing_messages():
+    controller = DummyController()
+    controller.translate_runtime_text = lambda text, rich=False: f"fr::{text}"
+    service = RecordingTelegramService(controller)
+
+    asyncio.run(service._handle_update(build_update("/management")))
+
+    assert service.messages[-1][0] == "fr::management"
 
 
 def test_trade_command_routes_to_direct_action_handler():
@@ -328,7 +443,10 @@ def test_trade_command_routes_to_direct_action_handler():
     asyncio.run(service._handle_update(build_update("/trade buy EUR/USD amount 1000 confirm")))
 
     assert controller.direct_actions == ["trade buy EUR/USD amount 1000 confirm"]
-    assert service.messages[-1] == ("direct:trade buy EUR/USD amount 1000 confirm", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "direct:trade buy EUR/USD amount 1000 confirm"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("controls")
 
 
 def test_buy_shortcut_builds_trade_command():
@@ -338,7 +456,10 @@ def test_buy_shortcut_builds_trade_command():
     asyncio.run(service._handle_update(build_update("/buy BTC/USDT amount 0.01 type market confirm")))
 
     assert controller.direct_actions == ["trade buy BTC/USDT amount 0.01 type market confirm"]
-    assert service.messages[-1] == ("direct:trade buy BTC/USDT amount 0.01 type market confirm", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "direct:trade buy BTC/USDT amount 0.01 type market confirm"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("controls")
 
 
 def test_trade_preview_includes_inline_confirmation_buttons():
@@ -369,7 +490,10 @@ def test_trade_confirm_button_executes_pending_trade():
 
     assert controller.direct_actions[-1] == "trade buy EUR/USD amount 1000 confirm"
     assert service.callback_answers[-1] == ("cb-1", "Trade submitted.")
-    assert service.messages[-1] == ("direct:trade buy EUR/USD amount 1000 confirm", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "direct:trade buy EUR/USD amount 1000 confirm"
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("controls")
 
 
 def test_trade_cancel_button_clears_pending_trade():
@@ -383,7 +507,10 @@ def test_trade_cancel_button_clears_pending_trade():
     asyncio.run(service._handle_update(build_callback_update(callback_data, callback_id="cb-2")))
 
     assert service.callback_answers[-1] == ("cb-2", "Trade request canceled.")
-    assert service.messages[-1] == ("Trade request canceled.", False, None)
+    message, include_keyboard, reply_markup = service.messages[-1]
+    assert message == "Trade request canceled."
+    assert include_keyboard is False
+    assert reply_markup == service._menu_markup("controls")
 
 
 def test_chat_history_is_passed_to_follow_up_messages():

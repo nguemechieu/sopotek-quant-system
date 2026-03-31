@@ -843,9 +843,28 @@ def translate_text(language_code, text):
     return options.get(normalized) or options.get(DEFAULT_LANGUAGE) or canonical
 
 
+def translate_rich_text(language_code, text):
+    source_text = str(text or "")
+    if not source_text:
+        return source_text
+    if "<" not in source_text or ">" not in source_text:
+        return translate_text(language_code, source_text)
+
+    translated_parts = []
+    for part in _HTML_TAG_SPLIT_PATTERN.split(source_text):
+        if not part:
+            continue
+        if _HTML_TAG_SPLIT_PATTERN.fullmatch(part):
+            translated_parts.append(part)
+            continue
+        translated_parts.append(_translate_compound_text(language_code, part))
+    return "".join(translated_parts)
+
+
 _COLON_LABEL_PATTERN = re.compile(r"^(?P<label>[^:\n]{1,80}?)(?P<sep>:\s*)(?P<rest>.+)$")
 _TRAILING_SUFFIX_PATTERN = re.compile(r"^(?P<label>.+?)(?P<suffix>\s+\([^)]*\))$")
 _SEGMENT_SPLIT_PATTERN = re.compile(r"(\s*\|\s*)")
+_HTML_TAG_SPLIT_PATTERN = re.compile(r"(<[^>]+>)")
 
 
 def _translate_exact_text(language_code, text):
@@ -929,7 +948,7 @@ def _sync_runtime_source_text(current_text, stored_source, previous_language):
     return current, source
 
 
-def _translate_runtime_attr(obj, language_code, previous_language, property_name, getter_name, setter_name):
+def _translate_runtime_attr(obj, language_code, previous_language, property_name, getter_name, setter_name, translator=None):
     getter = getattr(obj, getter_name, None)
     setter = getattr(obj, setter_name, None)
     if not callable(getter) or not callable(setter):
@@ -954,7 +973,8 @@ def _translate_runtime_attr(obj, language_code, previous_language, property_name
     if hasattr(obj, "setProperty"):
         obj.setProperty(property_name, source_text)
 
-    translated = translate_text(language_code, source_text)
+    translate_fn = translator or translate_text
+    translated = translate_fn(language_code, source_text)
     if translated != current_text:
         try:
             setter(translated)
@@ -1124,7 +1144,9 @@ def _translate_tree_headers(tree, language_code, previous_language):
             try:
                 header_item.setText(index, translated)
             except (TypeError, AttributeError, ValueError):
-               tree.setProperty("_i18n_source_tree_headers", stored_sources)
+                pass
+
+    tree.setProperty("_i18n_source_tree_headers", stored_sources)
 
 
 def _translate_tree_item(item, language_code, previous_language, item_role):
@@ -1200,6 +1222,7 @@ def apply_runtime_translations(root, language_code, previous_language=None):
             QMenu,
             QTabWidget,
             QTableWidget,
+            QTextBrowser,
             QTreeWidget,
             QWidget,
         )
@@ -1230,6 +1253,17 @@ def apply_runtime_translations(root, language_code, previous_language=None):
 
         if isinstance(obj, (QLabel, QAbstractButton, QAction)):
             _translate_runtime_attr(obj, normalized, previous, "_i18n_source_text", "text", "setText")
+
+        if isinstance(obj, QTextBrowser):
+            _translate_runtime_attr(
+                obj,
+                normalized,
+                previous,
+                "_i18n_source_html",
+                "toHtml",
+                "setHtml",
+                translator=translate_rich_text,
+            )
 
         if isinstance(obj, (QWidget, QDockWidget)):
             _translate_runtime_attr(obj, normalized, previous, "_i18n_source_window_title", "windowTitle", "setWindowTitle")

@@ -63,7 +63,14 @@ from storage.trade_repository import TradeRepository
 from strategy.strategy import Strategy
 from frontend.ui.services.trade_safety import age_seconds, format_age_label, timeframe_seconds
 
-from frontend.ui.i18n import DEFAULT_LANGUAGE, apply_runtime_translations, normalize_language_code, translate
+from frontend.ui.i18n import (
+    DEFAULT_LANGUAGE,
+    apply_runtime_translations,
+    normalize_language_code,
+    translate,
+    translate_rich_text,
+    translate_text,
+)
 from frontend.ui.terminal import Terminal
 try:
     import winsound
@@ -449,6 +456,10 @@ class AppController(QMainWindow):
 
     def tr(self, key, **kwargs):
         return translate(self.language_code, key, **kwargs)
+
+    def translate_runtime_text(self, text, rich=False):
+        translator = translate_rich_text if rich else translate_text
+        return translator(self.language_code, text)
 
     def refresh_license_status(self):
         self.license_status = self.license_manager.status()
