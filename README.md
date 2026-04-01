@@ -4,7 +4,11 @@
   <img alt="Sopotek Trading AI logo" src="src/assets/logo.png" width="170" height="170">
 </p>
 
-Sopotek Trading AI is a desktop trading workstation built by Sopotek Corporation. It combines broker connectivity, live charting, manual and AI-assisted execution, order and position tracking, backtesting, operational safety tooling, Telegram integration, and OpenAI-assisted workflows in one PySide6 application.
+Sopotek Trading AI is a next-generation trading workstation engineered by Sopotek Corporation to bridge the gap between retail platforms and institutional trading systems.
+
+The platform combines real-time market connectivity, AI-driven decision support, execution infrastructure, and risk-aware automation into a single desktop environment.
+
+With integrated backtesting, multi-asset support, and intelligent workflow automation, Sopotek empowers traders to scale from manual strategies to fully autonomous trading systems.
 
 ## Version And Status
 
@@ -134,6 +138,9 @@ python main.py
 The repository root `main.py` is the recommended launcher from the workspace root.
 It bootstraps the desktop app and delegates to the real entry point at `src/main.py`.
 
+For one-click launch on Windows, double-click `Launch Sopotek Trading AI.cmd`.
+That launcher uses the repo's vendored desktop dependencies, starts the UI on the host machine, and writes timestamped startup logs under `logs/`. The newest log file paths are recorded in `logs/host-ui-latest.txt`.
+
 ### 3. Start Safely
 1. Open the dashboard.
 2. Choose broker type, exchange, and mode.
@@ -201,6 +208,12 @@ Run a focused subset:
 python -m pytest src\tests\test_execution.py src\tests\test_other_broker_adapters.py src\tests\test_storage_runtime.py -q
 ```
 
+Run the suite with coverage output:
+
+```powershell
+python -m pytest src\tests -q --cov=src --cov-branch --cov-report=term-missing:skip-covered --cov-report=xml --cov-report=html
+```
+
 ## Packaging And Docs
 
 Build package artifacts:
@@ -221,9 +234,69 @@ Serve docs locally:
 python -m mkdocs serve -f docs\mkdocs.yml
 ```
 
+## Docker
+
+Build the container image:
+
+```powershell
+docker build -t sopotek-trading-ai .
+```
+
+Validate the compose stack:
+
+```powershell
+docker compose config
+```
+
+Run the local MySQL-backed stack:
+
+```powershell
+docker compose up -d mysql app
+```
+
+Run the desktop UI in your browser over local HTTP:
+
+```powershell
+docker compose --profile browser up app-http
+```
+
+Then open:
+
+```text
+http://localhost:6080/vnc.html?autoconnect=1&resize=scale
+```
+
+The browser UI is published only on `127.0.0.1` by default, so it is local-machine only unless you deliberately change the port binding.
+The browser profile forces software rendering and disables embedded Qt WebEngine panels inside the container, so desk tools such as Trader TV fall back to browser-launch links instead of in-app TradingView or YouTube embeds. This avoids the common Vulkan / Chromium crashes that happen under Xvfb and noVNC.
+The browser profile also starts an X11 clipboard bridge so copy and paste work more reliably inside the containerized Qt desktop. Because this is still running through noVNC in a browser tab, your browser may block direct `Ctrl+V` access to the system clipboard. If that happens, use the noVNC clipboard panel to paste text into the app.
+
+Run the headless profile:
+
+```powershell
+docker compose --profile headless up app-headless
+```
+
+Compose defaults the app to the local `mysql` service using `mysql+pymysql://`. Override `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, or `MYSQL_PORT` in your shell or `.env` before launch if you want different local credentials.
+
+When you configure the database in the app Preferences, use one of these URLs:
+
+- App running on Windows or directly on the host:
+  `mysql+pymysql://sopotek:sopotek_local@localhost:3306/sopotek_trading?charset=utf8mb4`
+- App running inside the same Docker Compose stack:
+  `mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4`
+
+If you changed `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, or `MYSQL_PORT` in `.env`, replace those values in the URL.
+
+## CI And Release Workflows
+
+- `CI`: runs flake8, full pytest coverage, package build validation, and Docker image smoke checks on pull requests and pushes to `master`.
+- `Publish Docker Image`: builds and pushes multi-arch images to GitHub Container Registry for `master` and version tags.
+- `Publish Python Package`: builds and validates wheel and sdist artifacts, then publishes them to PyPI on GitHub releases or manual dispatch.
+
 ## Storage And Runtime Files
 
-- Local database: `data/sopotek_trading.db`
+- Local Docker database: MySQL persisted in the `mysql_data` volume
+- Local non-Docker fallback database: `data/sopotek_trading.db`
 - Logs: `logs/` and `src/logs/`
 - Generated screenshots: `output/screenshots/`
 - Detached chart layouts and most operator preferences: persisted through `QSettings`
