@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, is_dataclass
 from functools import partial
 import inspect
 import json
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from broker.broker_factory import BrokerFactory
 from broker.market_venues import SPOT_ONLY_EXCHANGES, normalize_market_venue, supported_market_venues_for_profile
+from broker.paper_broker import PaperBroker
 from broker.rate_limiter import RateLimiter
 from core.sopotek_trading import SopotekTrading
 from event_bus.event_bus import EventBus
@@ -55,13 +57,14 @@ from market_data.websocket.coinbase_web_socket import CoinbaseWebSocket
 from market_data.websocket.paper_web_socket import PaperWebSocket
 from licensing.license_manager import LicenseManager
 from storage.agent_decision_repository import AgentDecisionRepository
-from storage.database import configure_database, get_database_url, init_database
+from storage.database import configure_database, get_database_url, init_database, is_sqlite_url, normalize_database_url
 from storage.equity_repository import EquitySnapshotRepository
 from storage.market_data_repository import MarketDataRepository
 from storage.trade_audit_repository import TradeAuditRepository
 from storage.trade_repository import TradeRepository, derive_trade_outcome
 from strategy.strategy import Strategy
 from frontend.ui.services.trade_safety import age_seconds, format_age_label, timeframe_seconds
+from sessions import SessionManager
 
 from frontend.ui.i18n import (
     DEFAULT_LANGUAGE,
@@ -104,6 +107,23 @@ def _normalize_forex_candle_price_component(value):
     if normalized in {"m", "mid", "middle", "midpoint"}:
         return "mid"
     return "bid"
+
+
+def _remote_database_url_from_env():
+    raw_url = str(os.getenv("SOPOTEK_DATABASE_URL", "") or "").strip()
+    if not raw_url:
+        return ""
+    normalized = normalize_database_url(raw_url)
+    if not normalized or is_sqlite_url(normalized):
+        return ""
+    return normalized
+
+
+def _storage_mode_from_env():
+    value = str(os.getenv("SOPOTEK_DATABASE_MODE", "") or "").strip().lower()
+    if value in {"local", "remote"}:
+        return value
+    return ""
 
 
 def _normalize_history_boundary(value, *, end_of_day=False):
@@ -247,11 +267,14 @@ class AppController(QMainWindow):
         self.license_status = self.license_manager.status()
 
         self.broker_manager = BrokerManager()
+        self.session_manager = SessionManager(parent_controller=self, logger=self.logger)
+        self.active_session_id = None
         self.rate_limiter = RateLimiter()
 
         self.broker = None
         self.trading_system = None
         self.terminal = None
+        self.session_terminals = {}
         self.telegram_service = None
         self.behavior_guard = None
         self.portfolio_allocator = None
@@ -313,14 +336,9 @@ class AppController(QMainWindow):
         self.forex_candle_price_component = _normalize_forex_candle_price_component(
             self.settings.value("market_data/forex_candle_price_component", "bid")
         )
-        self.database_mode = str(self.settings.value("storage/database_mode", "local") or "local").strip().lower()
-        if self.database_mode not in {"local", "remote"}:
-            self.database_mode = "local"
-        self.database_url = str(self.settings.value("storage/database_url", "") or "").strip()
+        self.database_mode, self.database_url = self._resolve_initial_storage_preferences(self.settings)
         self.database_connection_url = ""
-        self.autotrade_scope = str(self.settings.value("autotrade/scope", "all") or "all").strip().lower()
-        if self.autotrade_scope not in {"all", "selected", "watchlist"}:
-            self.autotrade_scope = "all"
+        self.autotrade_scope = self._normalize_autotrade_scope(self.settings.value("autotrade/scope", "all"))
         self._market_data_shortfall_notices = {}
         self._market_data_warning_timestamps = {}
         raw_watchlist = self.settings.value("autotrade/watchlist", "[]")
@@ -441,6 +459,7 @@ class AppController(QMainWindow):
         self._symbol_universe_rotation_cursor = 0
 
         self.symbols = ["BTC/USDT", "ETH/USDT", "XLM/USDT"]
+        self.symbol_catalog = list(self.symbols)
 
         self.connected = False
         self.config = None
@@ -451,8 +470,16 @@ class AppController(QMainWindow):
             self._setup_data()
             self._setup_ui(self.controller)
             self.setWindowTitle(self.tr("app.window_title"))
-        except Exception:
+        except Exception as exc:
             traceback.print_exc()
+            startup_message = self._friendly_startup_error(exc)
+            if startup_message:
+                if getattr(self, "logger", None) is not None:
+                    self.logger.error(startup_message)
+                try:
+                    sys.stderr.write(f"{startup_message}\n")
+                except Exception:
+                    pass
 
     def tr(self, key, **kwargs):
         return translate(self.language_code, key, **kwargs)
@@ -585,6 +612,13 @@ class AppController(QMainWindow):
         if "binance us is only available for us customers" in lowered:
             return "Binance US is only available for US customers in Sopotek. Choose Binance for non-US customers or switch the customer region to US."
 
+        if "restricted location" in lowered and "testnet.binance.vision" in lowered:
+            return (
+                "Binance US sandbox routing is unavailable from this location. "
+                "For Binance US, use LIVE mode for a real exchange session, or use PAPER mode so Sopotek runs a local "
+                "paper broker with Binance US market data instead of the Binance global testnet."
+            )
+
         if "api-key format invalid" in lowered or "\"code\":-2014" in lowered or "code': -2014" in lowered:
             return (
                 "The broker rejected the API key format. For Binance US, use a Binance US API key and secret pair, "
@@ -607,7 +641,97 @@ class AppController(QMainWindow):
                 "escaped \\n form."
             )
 
+        if "schwab" in lowered and "redirect_uri" in lowered:
+            return (
+                "Schwab authentication failed because the callback URL did not match the app setup. "
+                "Check the redirect URI in the Schwab Developer Portal and in the Sopotek dashboard, then try again.\n\n"
+                f"Details: {message}"
+            )
+
+        if "oauth callback state did not match" in lowered:
+            return (
+                "The broker sign-in response could not be verified safely. "
+                "Restart the Schwab sign-in flow and make sure the final redirect URL comes from the same browser session."
+            )
+
         return message or "Unknown initialization error"
+
+    def _friendly_startup_error(self, exc):
+        message = str(exc or "").strip()
+        lowered = message.lower()
+        if not lowered:
+            return ""
+
+        if "access denied for user" in lowered and "mysql" in lowered:
+            masked_database_url = self._masked_database_url(
+                getattr(self, "database_url", "") or _remote_database_url_from_env()
+            )
+            uses_local_compose_mysql = "@mysql:" in masked_database_url
+            recovery_hint = ""
+            if uses_local_compose_mysql:
+                recovery_hint = (
+                    " If this is the local Docker stack, the persisted `mysql_data` volume was likely initialized "
+                    "with older `MYSQL_USER`, `MYSQL_PASSWORD`, or `MYSQL_ROOT_PASSWORD` values. Reuse the original "
+                    "credentials or recreate the local MySQL volume with `docker compose down -v` before starting "
+                    "the stack again."
+                )
+
+            details_suffix = f"\n\nConfigured database: {masked_database_url}" if masked_database_url else ""
+            return (
+                "Startup could not connect to the configured MySQL database because the server rejected the username "
+                f"or password.{recovery_hint}\n\nDetails: {message}{details_suffix}"
+            )
+
+        return ""
+
+    def _should_route_crypto_paper_to_local_paper_broker(self, config):
+        broker_cfg = getattr(config, "broker", None)
+        if broker_cfg is None:
+            return False
+        broker_type = str(getattr(broker_cfg, "type", "") or "").strip().lower()
+        exchange = str(getattr(broker_cfg, "exchange", "") or "").strip().lower()
+        mode = str(getattr(broker_cfg, "mode", "") or "").strip().lower()
+        return broker_type == "crypto" and exchange not in {"", "paper"} and mode == "paper"
+
+    def _configure_local_crypto_paper_session(self, config):
+        broker_cfg = getattr(config, "broker", None)
+        if broker_cfg is None:
+            return []
+
+        exchange = str(getattr(broker_cfg, "exchange", "") or "").strip().lower()
+        params = dict(getattr(broker_cfg, "params", None) or {})
+        configured = params.get("paper_data_exchanges") or params.get("market_data_exchanges")
+        if isinstance(configured, str):
+            configured_exchanges = [item.strip().lower() for item in configured.split(",") if item.strip()]
+        elif isinstance(configured, (list, tuple, set)):
+            configured_exchanges = [str(item).strip().lower() for item in configured if str(item).strip()]
+        else:
+            configured_exchanges = []
+
+        ordered_exchanges = []
+        for candidate in [exchange, *configured_exchanges, *PaperBroker.DEFAULT_MARKET_DATA_EXCHANGES]:
+            normalized = str(candidate or "").strip().lower()
+            if normalized and normalized not in ordered_exchanges:
+                ordered_exchanges.append(normalized)
+
+        params["paper_data_exchange"] = exchange
+        params["paper_data_exchanges"] = ordered_exchanges
+        broker_cfg.params = params
+        self.paper_data_exchange = exchange
+        self.paper_data_exchanges = list(ordered_exchanges)
+        return ordered_exchanges
+
+    def _build_broker_for_login(self, config):
+        if self._should_route_crypto_paper_to_local_paper_broker(config):
+            exchanges = self._configure_local_crypto_paper_session(config)
+            exchange = str(getattr(getattr(config, "broker", None), "exchange", "") or "").strip().lower()
+            self.logger.info(
+                "Routing crypto paper session through PaperBroker exchange=%s market_data_exchanges=%s",
+                exchange,
+                exchanges,
+            )
+            return PaperBroker(self)
+        return BrokerFactory.create(config)
 
     def _broker_is_connected(self, broker):
         if broker is None:
@@ -652,25 +776,55 @@ class AppController(QMainWindow):
                 continue
 
     def eventFilter(self, watched, event):
-        if event is not None and event.type() == QEvent.Type.Show and self.language_code != DEFAULT_LANGUAGE:
-            try:
-                is_window = getattr(watched, "isWindow", None)
-                if callable(is_window) and is_window():
-                    apply_runtime_translations(watched, self.language_code)
-            except Exception:
-                pass
-        return super().eventFilter(watched, event)
+        try:
+            if event is not None and event.type() == QEvent.Type.Show and self.language_code != DEFAULT_LANGUAGE:
+                try:
+                    is_window = getattr(watched, "isWindow", None)
+                    if callable(is_window) and is_window():
+                        apply_runtime_translations(watched, self.language_code)
+                except Exception:
+                    pass
+            return super().eventFilter(watched, event)
+        except Exception:
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.debug("AppController eventFilter failed", exc_info=True)
+            return False
 
     def _setup_paths(self):
         self.data_dir = "data"
         os.makedirs(self.data_dir, exist_ok=True)
 
+    @staticmethod
+    def _resolve_initial_storage_preferences(settings):
+        remote_env_url = _remote_database_url_from_env()
+        env_mode = _storage_mode_from_env()
+        has_mode = bool(getattr(settings, "contains", lambda _key: False)("storage/database_mode"))
+        has_url = bool(getattr(settings, "contains", lambda _key: False)("storage/database_url"))
+
+        default_mode = env_mode or ("remote" if remote_env_url and not has_mode else "local")
+        mode = str(settings.value("storage/database_mode", default_mode) or default_mode).strip().lower()
+        if env_mode:
+            mode = env_mode
+        if mode not in {"local", "remote"}:
+            mode = default_mode
+
+        default_url = remote_env_url if mode == "remote" and (env_mode or not has_url) else ""
+        database_url = str(settings.value("storage/database_url", default_url) or default_url).strip()
+        if mode == "remote" and remote_env_url:
+            database_url = remote_env_url
+        return mode, database_url
+
     def _setup_data(self):
+        require_remote_storage = (
+            str(getattr(self, "database_mode", "local") or "local").strip().lower() == "remote"
+            and bool(_storage_mode_from_env() or _remote_database_url_from_env())
+        )
         self.configure_storage_database(
             database_mode=getattr(self, "database_mode", "local"),
             database_url=getattr(self, "database_url", ""),
             persist=False,
-            raise_on_error=False,
+            raise_on_error=require_remote_storage,
         )
         self.historical_data = pd.DataFrame(
             columns=["symbol", "timestamp", "open", "high", "low", "close", "volume"]
@@ -999,7 +1153,11 @@ class AppController(QMainWindow):
         symbol = self._normalize_strategy_symbol_key(payload.get("symbol"))
         if not symbol:
             return []
-        events = self._live_agent_decision_events.setdefault(symbol, [])
+        events_by_symbol = getattr(self, "_live_agent_decision_events", None)
+        if not isinstance(events_by_symbol, dict):
+            events_by_symbol = {}
+            self._live_agent_decision_events = events_by_symbol
+        events = events_by_symbol.setdefault(symbol, [])
         events.append(dict(payload, symbol=symbol))
         if len(events) > 250:
             del events[:-250]
@@ -1105,6 +1263,29 @@ class AppController(QMainWindow):
         self._emit_agent_runtime_signal(runtime_payload)
         return payload
 
+    @staticmethod
+    def _coerce_runtime_event_payload(data):
+        if isinstance(data, dict):
+            return dict(data)
+        if is_dataclass(data):
+            try:
+                return asdict(data)
+            except Exception:
+                return {}
+        if hasattr(data, "__dict__"):
+            try:
+                return {
+                    str(key): value
+                    for key, value in vars(data).items()
+                    if not str(key).startswith("_")
+                }
+            except Exception:
+                return {}
+        try:
+            return dict(data or {})
+        except Exception:
+            return {}
+
     def _agent_runtime_bus_message(self, event_type, data):
         payload = dict(data or {})
         signal_payload = dict(payload.get("signal") or {}) if isinstance(payload.get("signal"), dict) else {}
@@ -1128,6 +1309,18 @@ class AppController(QMainWindow):
             except Exception:
                 confidence_text = ""
             return f"Reasoning engine marked {symbol} as {decision}{confidence_text}."
+        if event_type == EventType.DECISION_EVENT:
+            action = str(payload.get("action") or "HOLD").strip().upper() or "HOLD"
+            profile_id = str(payload.get("profile_id") or "").strip()
+            selected_strategy = str(payload.get("selected_strategy") or strategy_name or "").strip() or "strategy blend"
+            confidence = payload.get("confidence")
+            confidence_text = ""
+            try:
+                confidence_text = f" at {float(confidence):.2f} confidence"
+            except Exception:
+                confidence_text = ""
+            profile_text = f" for profile {profile_id}" if profile_id else ""
+            return f"TraderAgent chose {action} on {symbol} via {selected_strategy}{profile_text}{confidence_text}."
         if event_type == EventType.RISK_APPROVED:
             return f"Risk approved {side or 'trade'} for {symbol}."
         if event_type == EventType.EXECUTION_PLAN:
@@ -1141,25 +1334,60 @@ class AppController(QMainWindow):
         return reason or f"{event_type} for {symbol}."
 
     async def _handle_trading_agent_bus_event(self, event):
-        data = dict(getattr(event, "data", {}) or {})
+        data = self._coerce_runtime_event_payload(getattr(event, "data", {}) or {})
         symbol = self._normalize_strategy_symbol_key(data.get("symbol"))
         if not symbol:
             return
         event_type = str(getattr(event, "type", "") or "").strip()
         signal_payload = dict(data.get("signal") or {}) if isinstance(data.get("signal"), dict) else {}
         review_payload = dict(data.get("trade_review") or {}) if isinstance(data.get("trade_review"), dict) else {}
+        metadata = dict(data.get("metadata") or {}) if isinstance(data.get("metadata"), dict) else {}
+        applied_constraints = data.get("applied_constraints")
+        if isinstance(applied_constraints, (list, tuple, set)):
+            applied_constraints = [str(item).strip() for item in applied_constraints if str(item).strip()]
+        elif str(applied_constraints or "").strip():
+            applied_constraints = [str(applied_constraints).strip()]
+        else:
+            applied_constraints = []
+        votes = dict(data.get("votes") or {}) if isinstance(data.get("votes"), dict) else {}
+        features = dict(data.get("features") or {}) if isinstance(data.get("features"), dict) else {}
+        selected_strategy = str(
+            data.get("selected_strategy")
+            or signal_payload.get("strategy_name")
+            or review_payload.get("strategy_name")
+            or data.get("strategy_name")
+            or ""
+        ).strip()
+        action = str(data.get("action") or "").strip().upper()
+        side = str(signal_payload.get("side") or review_payload.get("side") or data.get("side") or "").strip().lower()
+        if not side and action in {"BUY", "SELL"}:
+            side = action.lower()
         payload = {
             "kind": "bus",
             "event_type": event_type,
+            "agent_name": str(getattr(event, "source", "") or data.get("agent_name") or "").strip(),
             "symbol": symbol,
             "decision_id": str(data.get("decision_id") or review_payload.get("decision_id") or "").strip(),
-            "strategy_name": str(signal_payload.get("strategy_name") or review_payload.get("strategy_name") or data.get("strategy_name") or "").strip(),
-            "timeframe": str(data.get("timeframe") or review_payload.get("timeframe") or "").strip(),
-            "side": str(signal_payload.get("side") or review_payload.get("side") or data.get("side") or "").strip().lower(),
-            "reason": str(review_payload.get("reason") or signal_payload.get("reason") or data.get("reason") or "").strip(),
+            "profile_id": str(data.get("profile_id") or metadata.get("profile_id") or "").strip(),
+            "strategy_name": selected_strategy,
+            "timeframe": str(data.get("timeframe") or review_payload.get("timeframe") or metadata.get("timeframe") or "").strip(),
+            "stage": str(data.get("stage") or (action.lower() if action else "")).strip(),
+            "action": action,
+            "side": side,
+            "price": data.get("price"),
+            "quantity": data.get("quantity"),
+            "confidence": data.get("confidence"),
+            "model_probability": data.get("model_probability"),
+            "applied_constraints": applied_constraints,
+            "votes": votes,
+            "features": features,
+            "metadata": metadata,
+            "reason": str(data.get("reasoning") or review_payload.get("reason") or signal_payload.get("reason") or data.get("reason") or "").strip(),
+            "timestamp": data.get("timestamp") or getattr(event, "timestamp", None),
             "message": self._agent_runtime_bus_message(event_type, data),
             "payload": data,
         }
+        self._append_live_agent_decision_event(payload)
         self._emit_agent_runtime_signal(payload)
 
     def _bind_trading_runtime_streams(self):
@@ -1174,6 +1402,7 @@ class AppController(QMainWindow):
             for event_type in (
                 EventType.SIGNAL,
                 EventType.REASONING_DECISION,
+                EventType.DECISION_EVENT,
                 EventType.RISK_APPROVED,
                 EventType.RISK_ALERT,
                 EventType.EXECUTION_PLAN,
@@ -1398,6 +1627,55 @@ class AppController(QMainWindow):
     def _on_logout_requested(self):
         self._create_task(self.logout(), "logout")
 
+    def prompt_oauth_redirect_url(self, provider_name, authorization_url, redirect_uri):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{provider_name} Sign-In")
+        dialog.setModal(True)
+        dialog.resize(760, 360)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        title = QLabel(
+            f"Finish the {provider_name} sign-in flow in your browser, then paste the redirected URL or the authorization code below."
+        )
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        redirect_label = QLabel(f"Expected redirect URI: {redirect_uri}")
+        redirect_label.setWordWrap(True)
+        layout.addWidget(redirect_label)
+
+        auth_url_browser = QTextBrowser()
+        auth_url_browser.setOpenExternalLinks(True)
+        auth_url_browser.setPlainText(str(authorization_url or "").strip())
+        auth_url_browser.setMinimumHeight(120)
+        layout.addWidget(auth_url_browser)
+
+        input_label = QLabel("Redirect URL or authorization code")
+        layout.addWidget(input_label)
+
+        input_box = QLineEdit()
+        input_box.setPlaceholderText("Paste the full redirected URL or just the code parameter")
+        layout.addWidget(input_box)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+
+        cancel_button = QPushButton("Cancel")
+        submit_button = QPushButton("Continue")
+        submit_button.setDefault(True)
+        button_row.addWidget(cancel_button)
+        button_row.addWidget(submit_button)
+        layout.addLayout(button_row)
+
+        cancel_button.clicked.connect(dialog.reject)
+        submit_button.clicked.connect(dialog.accept)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return input_box.text().strip() or None
+
     def _create_task(self, coro, name):
         task = asyncio.create_task(coro)
 
@@ -1412,8 +1690,316 @@ class AppController(QMainWindow):
         task.add_done_callback(_done)
         return task
 
+    def _handle_session_registry_changed(self):
+        manager = getattr(self, "session_manager", None)
+        if manager is not None:
+            self.active_session_id = manager.active_session_id
+        dashboard = getattr(self, "dashboard", None)
+        if dashboard is not None and hasattr(dashboard, "refresh_active_sessions"):
+            try:
+                dashboard.refresh_active_sessions()
+            except Exception:
+                self.logger.debug("Dashboard session refresh failed", exc_info=True)
+        terminals = []
+        active_terminal = getattr(self, "terminal", None)
+        if active_terminal is not None:
+            terminals.append(active_terminal)
+        for terminal in list(getattr(self, "session_terminals", {}).values()):
+            if terminal is not None and terminal not in terminals:
+                terminals.append(terminal)
+        for terminal in terminals:
+            refresh_picker = getattr(terminal, "_refresh_session_selector", None)
+            if callable(refresh_picker):
+                try:
+                    refresh_picker()
+                except Exception:
+                    self.logger.debug("Terminal session selector refresh failed", exc_info=True)
+            refresh_tabs = getattr(terminal, "_refresh_session_tabs", None)
+            if callable(refresh_tabs):
+                try:
+                    refresh_tabs()
+                except Exception:
+                    self.logger.debug("Terminal session tabs refresh failed", exc_info=True)
+
+    def _session_terminal_registry(self):
+        registry = getattr(self, "session_terminals", None)
+        if not isinstance(registry, dict):
+            registry = {}
+            self.session_terminals = registry
+        return registry
+
+    def _remember_session_terminal(self, session_id, terminal):
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id or terminal is None:
+            return
+        registry = self._session_terminal_registry()
+        registry[normalized_session_id] = terminal
+        self.terminal = terminal
+
+        destroyed_signal = getattr(terminal, "destroyed", None)
+        if destroyed_signal is not None and not bool(getattr(terminal, "_session_destroy_hook_installed", False)):
+            destroyed_signal.connect(
+                lambda *_args, sid=normalized_session_id, target=terminal: self._forget_session_terminal(
+                    sid,
+                    target,
+                )
+            )
+            terminal._session_destroy_hook_installed = True
+
+    def _forget_session_terminal(self, session_id, terminal=None):
+        normalized_session_id = str(session_id or "").strip()
+        registry = self._session_terminal_registry()
+        cached = registry.get(normalized_session_id)
+        if cached is None:
+            return
+        if terminal is not None and cached is not terminal:
+            return
+        registry.pop(normalized_session_id, None)
+        if getattr(self, "terminal", None) is cached:
+            self.terminal = None
+            active_session_id = str(getattr(self, "active_session_id", None) or "").strip()
+            replacement = registry.get(active_session_id) if active_session_id else None
+            if replacement is None and registry:
+                replacement = next(iter(registry.values()))
+            if replacement is not None:
+                self.terminal = replacement
+
+    def _focus_session_terminal(self, session_id):
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        terminal = self._session_terminal_registry().get(normalized_session_id)
+        if terminal is None:
+            return None
+        self.terminal = terminal
+        show_normal = getattr(terminal, "showNormal", None)
+        if callable(show_normal):
+            show_normal()
+        show_window = getattr(terminal, "show", None)
+        if callable(show_window):
+            show_window()
+        raise_window = getattr(terminal, "raise_", None)
+        if callable(raise_window):
+            raise_window()
+        activate_window = getattr(terminal, "activateWindow", None)
+        if callable(activate_window):
+            activate_window()
+        return terminal
+
+    def _session_label(self, session_id):
+        manager = getattr(self, "session_manager", None)
+        session = manager.get_session(session_id) if manager is not None and hasattr(manager, "get_session") else None
+        if session is None:
+            return ""
+        return str(getattr(session, "label", "") or "").strip()
+
+    def list_trading_sessions(self):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return []
+        return manager.list_session_snapshots()
+
+    def active_trading_session_snapshot(self):
+        manager = getattr(self, "session_manager", None)
+        session = manager.get_active_session() if manager is not None else None
+        return session.snapshot().to_dict() if session is not None else None
+
+    def aggregate_session_portfolio(self):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return {}
+        return manager.aggregate_portfolio()
+
+    async def route_order_to_best_session(self, symbol, side):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return None
+        return await manager.route_order_to_best_session(symbol, side)
+
+    async def activate_trading_session(self, session_id):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            raise RuntimeError("Session manager is not available.")
+        session = await manager.activate_session(session_id)
+        await self._bind_active_session_state(session)
+        await self.initialize_trading(session_id=session.session_id, force_new=False)
+        return session
+
+    def request_session_activation(self, session_id):
+        if not session_id:
+            return None
+        return self._create_task(self.activate_trading_session(session_id), f"activate_session:{session_id}")
+
+    async def stop_trading_session(self, session_id):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return None
+        session = await manager.stop_session(session_id)
+        if session is None:
+            return None
+        if getattr(self, "active_session_id", None) == session_id:
+            await self._bind_active_session_state(session, restart_stream=False)
+        return session
+
+    async def start_trading_session(self, session_id):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return None
+        session = await manager.start_session(session_id)
+        if getattr(self, "active_session_id", None) == session_id:
+            await self._bind_active_session_state(session, restart_stream=False)
+        return session
+
+    def request_session_stop(self, session_id):
+        if not session_id:
+            return None
+        return self._create_task(self.stop_trading_session(session_id), f"stop_session:{session_id}")
+
+    def request_session_start(self, session_id):
+        if not session_id:
+            return None
+        return self._create_task(self.start_trading_session(session_id), f"start_session:{session_id}")
+
+    async def destroy_trading_session(self, session_id):
+        manager = getattr(self, "session_manager", None)
+        if manager is None:
+            return False
+        session_terminal = self._session_terminal_registry().get(str(session_id or "").strip())
+        if session_terminal is not None:
+            close_terminal = getattr(session_terminal, "close", None)
+            if callable(close_terminal):
+                try:
+                    close_terminal()
+                except Exception:
+                    self.logger.debug("Session terminal close failed", exc_info=True)
+            self._forget_session_terminal(session_id, session_terminal)
+        was_active = str(session_id or "") == str(getattr(self, "active_session_id", None) or "")
+        destroyed = await manager.destroy_session(session_id)
+        if not destroyed:
+            return False
+        next_active = manager.get_active_session()
+        if next_active is not None:
+            await self._bind_active_session_state(next_active)
+        elif was_active:
+            await self._stop_active_market_stream_tasks()
+            self.broker = None
+            self.trading_system = None
+            self.config = None
+            self.symbols = []
+            self.symbol_catalog = []
+            self.balances = {}
+            self.balance = {}
+            self.connected = False
+            try:
+                self.connection_signal.emit("disconnected")
+            except Exception:
+                pass
+        self._handle_session_registry_changed()
+        return True
+
+    def request_session_destroy(self, session_id):
+        if not session_id:
+            return None
+        return self._create_task(self.destroy_trading_session(session_id), f"destroy_session:{session_id}")
+
+    async def _stop_active_market_stream_tasks(self):
+        ticker_task = getattr(self, "_ticker_task", None)
+        if ticker_task is not None and not ticker_task.done():
+            ticker_task.cancel()
+            try:
+                await ticker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                self.logger.debug("Ticker task shutdown failed", exc_info=True)
+        self._ticker_task = None
+
+        recovery_task = getattr(self, "_market_stream_recovery_task", None)
+        if recovery_task is not None and not recovery_task.done():
+            recovery_task.cancel()
+            try:
+                await recovery_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                self.logger.debug("Market stream recovery shutdown failed", exc_info=True)
+        self._market_stream_recovery_task = None
+
+        ws_task = getattr(self, "_ws_task", None)
+        if ws_task is not None and not ws_task.done():
+            ws_task.cancel()
+            try:
+                await ws_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                self.logger.debug("Websocket task shutdown failed", exc_info=True)
+        self._ws_task = None
+
+        ws_bus_task = getattr(self, "_ws_bus_task", None)
+        if ws_bus_task is not None and not ws_bus_task.done():
+            ws_bus_task.cancel()
+            try:
+                await ws_bus_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                self.logger.debug("Websocket bus shutdown failed", exc_info=True)
+        self._ws_bus_task = None
+        self.ws_bus = None
+        self.ws_manager = None
+
+    async def _bind_active_session_state(self, session, restart_stream=True):
+        if session is None:
+            return
+
+        self.active_session_id = getattr(session, "session_id", None)
+        manager = getattr(self, "session_manager", None)
+        if manager is not None:
+            manager.active_session_id = self.active_session_id
+
+        self.config = getattr(session, "config", None)
+        self.broker = getattr(session, "broker", None)
+        self.trading_system = getattr(session, "trading_system", None)
+        self.symbols = list(getattr(session, "symbols", []) or [])
+        self.symbol_catalog = list(getattr(session, "symbol_catalog", []) or self.symbols)
+        self.balances = dict(getattr(session, "balances", {}) or {})
+        self.balance = dict(self.balances)
+        self.portfolio = getattr(session, "portfolio", None)
+        proxy = getattr(session, "session_controller", None)
+        self.behavior_guard = getattr(proxy, "behavior_guard", None) if proxy is not None else None
+        self.event_bus = getattr(proxy, "event_bus", None) if proxy is not None else None
+        self.agent_event_runtime = getattr(proxy, "agent_event_runtime", None) if proxy is not None else None
+        self.signal_agents = getattr(proxy, "signal_agents", []) if proxy is not None else []
+        self.signal_consensus_agent = getattr(proxy, "signal_consensus_agent", None) if proxy is not None else None
+        self.signal_aggregation_agent = getattr(proxy, "signal_aggregation_agent", None) if proxy is not None else None
+        self.reasoning_engine = getattr(proxy, "reasoning_engine", None) if proxy is not None else None
+        self.agent_memory = getattr(proxy, "agent_memory", None) if proxy is not None else None
+        self.connected = bool(getattr(session, "connected", False))
+        self.connection_signal.emit("connected" if self.connected else "disconnected")
+
+        exchange_name = getattr(session, "exchange", None) or self._active_exchange_code() or "broker"
+        broker_type = getattr(getattr(self.config, "broker", None), "type", None) if getattr(self, "config", None) is not None else None
+        self._refresh_symbol_universe_tiers(
+            catalog_symbols=self.symbol_catalog,
+            broker_type=broker_type,
+            exchange=exchange_name,
+        )
+        if self.symbols:
+            self.symbols_signal.emit(str(exchange_name), list(self.symbols))
+
+        self._handle_session_registry_changed()
+
+        if restart_stream and self.connected:
+            await self._stop_active_market_stream_tasks()
+            await self._restart_telegram_service()
+            await self._start_market_stream()
+            await self._warmup_visible_candles()
+            self._create_task(self.run_startup_health_check(), "startup_health_check")
+
     async def handle_login(self, config):
         async with self._login_lock:
+            session = None
             try:
                 if config is None:
                     raise RuntimeError("Invalid configuration received")
@@ -1454,82 +2040,30 @@ class AppController(QMainWindow):
                 exchange = config.broker.exchange or "unknown"
                 if not broker_type:
                     raise RuntimeError("Broker type missing")
-
-                if self.connected or self.broker is not None or self.terminal is not None:
-                    self.logger.info("Resetting existing session state before login")
-                    self.connected = False
-                    self.connection_signal.emit("disconnected")
-                await self._cleanup_session(stop_trading=True, close_broker=True)
-
-                self.logger.info("Initializing broker %s", exchange)
-                broker = BrokerFactory.create(config)
-
-                if broker is None:
-                    raise RuntimeError("Broker creation failed")
-
-                if hasattr(broker, "controller"):
-                    broker.controller = self
-                if hasattr(broker, "logger"):
-                    broker.logger = self.logger
-
-                self.broker = broker
-                if self._broker_is_connected(self.broker):
-                    self.logger.info("Broker %s is already connected; reusing existing broker session", exchange)
-                else:
-                    await self.broker.connect()
-
+                self.logger.info("Initializing session for broker %s", exchange)
+                session = await self.session_manager.create_session(config)
+                await self._bind_active_session_state(session)
                 self._restore_performance_state()
-                self.balances = await self._fetch_balances(self.broker)
-                self.balance = self.balances
                 self._update_performance_equity(self.balances)
-
-                raw_symbols = await self._fetch_symbols(self.broker)
-                filtered_symbols = self._filter_symbols_for_trading(raw_symbols, broker_type, exchange)
-                self.symbols = await self._select_trade_symbols(filtered_symbols, broker_type, exchange)
-                self._refresh_symbol_universe_tiers(
-                    catalog_symbols=filtered_symbols,
-                    broker_type=broker_type,
-                    exchange=exchange,
-                )
-
-                self.logger.info(
-                    "Broker ready exchange=%s type=%s symbols=%s (raw=%s filtered=%s)",
-                    exchange,
-                    broker_type,
-                    len(self.symbols),
-                    len(raw_symbols),
-                    len(filtered_symbols),
-                )
-
-                self.trading_system = SopotekTrading(self)
-                self._live_agent_decision_events = {}
-                self._live_agent_runtime_feed = []
-                self._bind_trading_runtime_streams()
-                portfolio_manager = getattr(self.trading_system, "portfolio", None)
-                self.portfolio = getattr(portfolio_manager, "portfolio", None)
                 self._performance_recorded_orders.clear()
-                self.connected = True
 
-                self.connection_signal.emit("connected")
-                self.symbols_signal.emit(exchange, self.symbols)
-
-                await self.initialize_trading()
+                await self.initialize_trading(session_id=session.session_id, force_new=True)
                 self.symbols_signal.emit(exchange, self.symbols)
                 self._schedule_startup_strategy_auto_assignment(
                     symbols=self.symbols,
                     timeframe=self.time_frame,
                     exchange=exchange,
                 )
-                await self._restart_telegram_service()
-
-                await self._start_market_stream()
-                await self._warmup_visible_candles()
 
             except Exception as e:
+                if session is not None:
+                    try:
+                        await self.session_manager.destroy_session(session.session_id)
+                    except Exception:
+                        self.logger.debug("Failed to roll back incomplete session %s", getattr(session, "session_id", None), exc_info=True)
                 self.connected = False
                 self.connection_signal.emit("disconnected")
                 self.logger.exception("Initialization failed")
-                await self._cleanup_session(stop_trading=True, close_broker=True)
                 QMessageBox.critical(
                     self,
                     "Initialization Failed",
@@ -1537,6 +2071,7 @@ class AppController(QMainWindow):
                 )
             finally:
                 self.dashboard.hide_loading()
+                self._handle_session_registry_changed()
 
     async def _fetch_symbols(self, broker):
         symbols = None
@@ -1819,6 +2354,31 @@ class AppController(QMainWindow):
             if value and value not in normalized:
                 normalized.append(value)
         return normalized
+
+    @classmethod
+    def _normalize_autotrade_scope(cls, scope):
+        normalized = str(scope or "all").strip().lower().replace("_", " ").replace("-", " ")
+        aliases = {
+            "selected symbol": "selected",
+            "watch list": "watchlist",
+            "best ranked": "ranked",
+            "top ranked": "ranked",
+        }
+        normalized = aliases.get(normalized, normalized)
+        normalized = normalized.replace(" ", "")
+        if normalized not in {"all", "selected", "watchlist", "ranked"}:
+            return "all"
+        return normalized
+
+    @classmethod
+    def _autotrade_scope_display_name(cls, scope):
+        labels = {
+            "all": "All Symbols",
+            "selected": "Selected Symbol",
+            "watchlist": "Watchlist",
+            "ranked": "Best Ranked",
+        }
+        return labels.get(cls._normalize_autotrade_scope(scope), "All Symbols")
 
     def _active_broker_type(self, broker_type=None, exchange=None):
         normalized_type = str(broker_type or "").strip().lower()
@@ -2174,25 +2734,61 @@ class AppController(QMainWindow):
         if equity is not None:
             self.equity_signal.emit(equity)
 
-    async def initialize_trading(self):
+    async def initialize_trading(self, session_id=None, force_new=False):
         try:
-            if self.terminal:
-                await self._cleanup_session(stop_trading=False, close_broker=False)
+            resolved_session_id = str(session_id or getattr(self, "active_session_id", None) or "").strip()
+            if resolved_session_id and not force_new:
+                existing_terminal = self._focus_session_terminal(resolved_session_id)
+                if existing_terminal is not None:
+                    bind_session = getattr(existing_terminal, "bind_session", None)
+                    if callable(bind_session):
+                        bind_session(resolved_session_id, label=self._session_label(resolved_session_id))
+                    self._handle_session_registry_changed()
+                    return
+            elif not resolved_session_id and self.terminal:
+                show_normal = getattr(self.terminal, "showNormal", None)
+                if callable(show_normal):
+                    show_normal()
+                show_window = getattr(self.terminal, "show", None)
+                if callable(show_window):
+                    show_window()
+                raise_window = getattr(self.terminal, "raise_", None)
+                if callable(raise_window):
+                    raise_window()
+                activate_window = getattr(self.terminal, "activateWindow", None)
+                if callable(activate_window):
+                    activate_window()
+                self._handle_session_registry_changed()
+                return
 
             restore_task = getattr(self, "_terminal_runtime_restore_task", None)
             if restore_task is not None and not restore_task.done():
                 restore_task.cancel()
             self._terminal_runtime_restore_task = None
 
-            self.terminal = Terminal(self)
-            self.stack.addWidget(self.terminal)
-            self.stack.setCurrentWidget(self.terminal)
+            terminal = Terminal(self)
+            if resolved_session_id:
+                bind_session = getattr(terminal, "bind_session", None)
+                if callable(bind_session):
+                    bind_session(resolved_session_id, label=self._session_label(resolved_session_id))
+                self._remember_session_terminal(resolved_session_id, terminal)
+            else:
+                self.terminal = terminal
+            show_window = getattr(terminal, "show", None)
+            if callable(show_window):
+                show_window()
+            raise_window = getattr(terminal, "raise_", None)
+            if callable(raise_window):
+                raise_window()
+            activate_window = getattr(terminal, "activateWindow", None)
+            if callable(activate_window):
+                activate_window()
             self._fit_window_to_available_screen()
             QTimer.singleShot(0, self._fit_window_to_available_screen)
-            self.terminal.logout_requested.connect(self._on_logout_requested)
-            if hasattr(self.terminal, "load_persisted_runtime_data"):
+            terminal.logout_requested.connect(self._on_logout_requested)
+            if hasattr(terminal, "load_persisted_runtime_data"):
                 self._terminal_runtime_restore_task = self._create_task(
-                    self._restore_terminal_runtime_data(self.terminal),
+                    self._restore_terminal_runtime_data(terminal),
                     "terminal_runtime_restore",
                 )
             equity = self._extract_balance_equity_value(getattr(self, "balances", {}))
@@ -2208,7 +2804,7 @@ class AppController(QMainWindow):
         current_task = asyncio.current_task()
         try:
             await asyncio.sleep(0)
-            if terminal is None or terminal is not getattr(self, "terminal", None):
+            if terminal is None:
                 return
             if getattr(terminal, "_ui_shutting_down", False):
                 return
@@ -6417,6 +7013,7 @@ class AppController(QMainWindow):
             "- set ai scope all\n"
             "- set ai scope selected\n"
             "- set ai scope watchlist\n"
+            "- set ai scope best ranked\n"
             "- activate kill switch\n"
             "- resume trading\n"
             "\n"
@@ -6684,6 +7281,8 @@ class AppController(QMainWindow):
                     return False, "AI trading cannot start because the watchlist scope has no checked symbols."
                 if scope_value == "selected":
                     return False, "AI trading cannot start because there is no active selected symbol yet."
+                if scope_value == "ranked":
+                    return False, "AI trading cannot start because the best-ranked scope has no tradable symbols yet."
                 return False, "AI trading cannot start because no symbols are available for the chosen AI scope."
 
         setter(target)
@@ -7320,11 +7919,11 @@ class AppController(QMainWindow):
         terminal = getattr(self, "terminal", None)
         if terminal is not None:
             scope_match = re.search(
-                r"(?:set|change|switch)\s+(?:ai\s+)?scope\s+(all|selected|selected symbol|watchlist)",
+                r"(?:set|change|switch)\s+(?:ai\s+)?scope\s+(all|selected|selected symbol|watchlist|ranked|best ranked|top ranked)",
                 lowered,
             )
             if scope_match:
-                scope = scope_match.group(1).replace("selected symbol", "selected")
+                scope = self._normalize_autotrade_scope(scope_match.group(1))
                 if hasattr(terminal, "_apply_autotrade_scope"):
                     terminal._apply_autotrade_scope(scope)
                     return f"AI scope set to {getattr(terminal, '_autotrade_scope_label', lambda: scope.title())()}."
@@ -7665,10 +8264,111 @@ class AppController(QMainWindow):
 
         return None
 
+    def _autotrade_symbol_pools(self, available_symbols=None, catalog_symbols=None):
+        available = self._normalize_symbol_sequence(
+            getattr(self, "symbols", []) if available_symbols is None else available_symbols
+        )
+        if catalog_symbols is None:
+            catalog = self._normalize_symbol_sequence(
+                (getattr(self, "_symbol_universe_tiers", {}) or {}).get("catalog", [])
+            )
+            if not catalog:
+                broker_symbols = getattr(getattr(self, "broker", None), "symbols", None)
+                catalog = self._normalize_symbol_sequence(broker_symbols or available)
+        else:
+            catalog = self._normalize_symbol_sequence(catalog_symbols)
+
+        merged_catalog = []
+        for source in (available, catalog):
+            for symbol in source:
+                if symbol and symbol not in merged_catalog:
+                    merged_catalog.append(symbol)
+        return available, merged_catalog or list(available)
+
+    def _best_ranked_autotrade_symbols(
+        self,
+        available_symbols=None,
+        catalog_symbols=None,
+        broker_type=None,
+        exchange=None,
+        limit=None,
+    ):
+        available, catalog = self._autotrade_symbol_pools(
+            available_symbols=available_symbols,
+            catalog_symbols=catalog_symbols,
+        )
+        candidates = list(catalog or available)
+        if not candidates:
+            return []
+
+        policy = self._symbol_universe_policy(broker_type=broker_type, exchange=exchange)
+        resolved_limit = int(limit or policy.get("auto_assignment_limit", 0) or 0)
+        if resolved_limit <= 0:
+            resolved_limit = len(candidates)
+
+        scored = []
+        for index, symbol in enumerate(candidates):
+            ranked_rows = self.ranked_strategies_for_symbol(symbol)
+            top_row = ranked_rows[0] if ranked_rows else {}
+            scored.append(
+                {
+                    "symbol": symbol,
+                    "index": index,
+                    "ranked": bool(ranked_rows),
+                    "score": float(top_row.get("score", 0.0) or 0.0),
+                    "sharpe_ratio": float(top_row.get("sharpe_ratio", 0.0) or 0.0),
+                    "total_profit": float(top_row.get("total_profit", 0.0) or 0.0),
+                    "win_rate": float(top_row.get("win_rate", 0.0) or 0.0),
+                }
+            )
+
+        ranked_symbols = []
+        if any(item["ranked"] for item in scored):
+            ranked_symbols = [
+                item["symbol"]
+                for item in sorted(
+                    [item for item in scored if item["ranked"]],
+                    key=lambda item: (
+                        -item["score"],
+                        -item["sharpe_ratio"],
+                        -item["total_profit"],
+                        -item["win_rate"],
+                        item["index"],
+                    ),
+                )
+            ]
+
+        fallback_source = self._prioritize_symbols_for_trading(
+            available or candidates,
+            top_n=len(available or candidates),
+        )
+        resolved = []
+        for source in (ranked_symbols, fallback_source, candidates):
+            for symbol in source:
+                if symbol and symbol not in resolved:
+                    resolved.append(symbol)
+                if len(resolved) >= resolved_limit:
+                    return resolved
+        return resolved[:resolved_limit]
+
+    def get_best_ranked_autotrade_symbols(
+        self,
+        available_symbols=None,
+        catalog_symbols=None,
+        broker_type=None,
+        exchange=None,
+        limit=None,
+    ):
+        return self._best_ranked_autotrade_symbols(
+            available_symbols=available_symbols,
+            catalog_symbols=catalog_symbols,
+            broker_type=broker_type,
+            exchange=exchange,
+            limit=limit,
+        )
+
     def set_autotrade_scope(self, scope):
-        normalized = str(scope or "all").strip().lower()
-        if normalized not in {"all", "selected", "watchlist"}:
-            normalized = "all"
+        normalized = self._normalize_autotrade_scope(scope)
         self.autotrade_scope = normalized
         self.settings.setValue("autotrade/scope", normalized)
 
@@ -7710,34 +8410,77 @@ class AppController(QMainWindow):
                 return str(symbol).upper().strip()
         return ""
 
-    def is_symbol_enabled_for_autotrade(self, symbol):
+    def is_symbol_enabled_for_autotrade(
+        self,
+        symbol,
+        *,
+        available_symbols=None,
+        catalog_symbols=None,
+        selected_symbol=None,
+        broker_type=None,
+        exchange=None,
+    ):
         normalized = str(symbol or "").upper().strip()
         if not normalized:
             return False
 
-        scope = str(getattr(self, "autotrade_scope", "all") or "all").lower()
+        available, catalog = self._autotrade_symbol_pools(
+            available_symbols=available_symbols,
+            catalog_symbols=catalog_symbols,
+        )
+        available_set = set(available)
+        catalog_set = set(catalog or available)
+        scope = self._normalize_autotrade_scope(getattr(self, "autotrade_scope", "all"))
         if scope == "selected":
-            return normalized == self._current_autotrade_selected_symbol()
+            current_selected = str(
+                selected_symbol if selected_symbol is not None else self._current_autotrade_selected_symbol()
+            ).upper().strip()
+            return bool(current_selected) and normalized == current_selected and normalized in catalog_set
         if scope == "watchlist":
-            return normalized in set(getattr(self, "autotrade_watchlist", set()) or set())
-        return normalized in {str(item).upper().strip() for item in (getattr(self, "symbols", []) or [])}
+            return normalized in set(getattr(self, "autotrade_watchlist", set()) or set()) and normalized in catalog_set
+        if scope == "ranked":
+            ranked_symbols = self._best_ranked_autotrade_symbols(
+                available_symbols=available,
+                catalog_symbols=catalog,
+                broker_type=broker_type,
+                exchange=exchange,
+            )
+            return normalized in set(ranked_symbols)
+        return normalized in available_set
 
-    def get_active_autotrade_symbols(self):
-        available = [
-            str(symbol).upper().strip()
-            for symbol in (getattr(self, "symbols", []) or [])
-            if str(symbol).strip()
-        ]
-        if not available:
+    def get_active_autotrade_symbols(
+        self,
+        *,
+        available_symbols=None,
+        catalog_symbols=None,
+        selected_symbol=None,
+        broker_type=None,
+        exchange=None,
+    ):
+        available, catalog = self._autotrade_symbol_pools(
+            available_symbols=available_symbols,
+            catalog_symbols=catalog_symbols,
+        )
+        if not available and not catalog:
             return []
 
-        scope = str(getattr(self, "autotrade_scope", "all") or "all").lower()
+        scope = self._normalize_autotrade_scope(getattr(self, "autotrade_scope", "all"))
         if scope == "selected":
-            selected = self._current_autotrade_selected_symbol()
-            return [selected] if selected else []
+            selected = str(
+                selected_symbol if selected_symbol is not None else self._current_autotrade_selected_symbol()
+            ).upper().strip()
+            candidate_pool = set(catalog or available)
+            return [selected] if selected and selected in candidate_pool else []
         if scope == "watchlist":
             watchlist = set(getattr(self, "autotrade_watchlist", set()) or set())
-            return [symbol for symbol in available if symbol in watchlist]
+            return [symbol for symbol in (catalog or available) if symbol in watchlist]
+        if scope == "ranked":
+            return self._best_ranked_autotrade_symbols(
+                available_symbols=available,
+                catalog_symbols=catalog,
+                broker_type=broker_type,
+                exchange=exchange,
+            )
         return available
 
     async def _start_market_stream(self):
@@ -9499,7 +10242,7 @@ class AppController(QMainWindow):
         return "\n".join(lines)
 
     async def telegram_status_text(self):
-        scope = str(getattr(self, "autotrade_scope", "all") or "all").title()
+        scope = self._autotrade_scope_display_name(getattr(self, "autotrade_scope", "all"))
         return (
             "<b>Sopotek Status</b>\n"
             f"Connected: <b>{'YES' if self.connected else 'NO'}</b>\n"
@@ -9618,7 +10361,7 @@ class AppController(QMainWindow):
 
         market_type = str(getattr(self, "market_trade_preference", "auto") or "auto").strip() or "auto"
         timeframe = str(getattr(self, "time_frame", "1h") or "1h").strip() or "1h"
-        scope = str(getattr(self, "autotrade_scope", "all") or "all").strip().title() or "All"
+        scope = self._autotrade_scope_display_name(getattr(self, "autotrade_scope", "all"))
         broker_label = str(getattr(getattr(self, "broker", None), "exchange_name", "-") or "-").upper()
         telegram_snapshot = self.telegram_status_snapshot()
         lines = []
@@ -9945,7 +10688,7 @@ class AppController(QMainWindow):
             f"Account: {self.current_account_label()}",
             f"Market Data: {self.get_market_stream_status()}",
             f"Telegram: {self.telegram_management_text().replace(chr(10), ' | ')}",
-            f"AI Scope: {getattr(self, 'autotrade_scope', 'all')}",
+            f"AI Scope: {self._autotrade_scope_display_name(getattr(self, 'autotrade_scope', 'all'))}",
             f"Symbols Loaded: {len(getattr(self, 'symbols', []) or [])}",
             f"Default Timeframe: {getattr(self, 'time_frame', '1h')}",
             f"Health Check: {self.get_health_check_summary()}",
@@ -10736,6 +11479,8 @@ class AppController(QMainWindow):
             "provider": str(reasoning.get("provider") or signal.get("reasoning_provider") or "").strip(),
             "mode": str(reasoning.get("mode") or signal.get("reasoning_mode") or "").strip(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": str(signal.get("session_id") or "").strip(),
+            "session_label": str(signal.get("session_label") or "").strip(),
         }
 
         self.ai_signal_monitor.emit(payload)
@@ -10779,6 +11524,8 @@ class AppController(QMainWindow):
             "ml_probability": round(float(signal.get("confidence", 0.0) or 0.0), 4),
             "reason": str(signal.get("reason", "")),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": str(signal.get("session_id") or "").strip(),
+            "session_label": str(signal.get("session_label") or "").strip(),
         }
 
         self.strategy_debug_signal.emit(payload)
@@ -11035,17 +11782,26 @@ class AppController(QMainWindow):
                 self._live_agent_decision_events = {}
                 self._live_agent_runtime_feed = []
 
-            terminal = getattr(self, "terminal", None)
-            if terminal is not None:
-                _run_cleanup_step("mark terminal as shutting down", lambda: setattr(terminal, "_ui_shutting_down", True))
+            terminals = []
+            primary_terminal = getattr(self, "terminal", None)
+            if primary_terminal is not None:
+                terminals.append(primary_terminal)
+            for terminal in list(self._session_terminal_registry().values()):
+                if terminal is not None and terminal not in terminals:
+                    terminals.append(terminal)
+            for terminal in terminals:
+                _run_cleanup_step("mark terminal as shutting down", lambda target=terminal: setattr(target, "_ui_shutting_down", True))
                 disconnect_signals = getattr(terminal, "_disconnect_controller_signals", None)
                 if callable(disconnect_signals):
                     _run_cleanup_step("disconnect terminal controller signals", disconnect_signals)
                 stack = getattr(self, "stack", None)
                 if stack is not None and hasattr(stack, "removeWidget"):
-                    _run_cleanup_step("remove terminal widget", lambda: stack.removeWidget(terminal))
-                _run_cleanup_step("schedule terminal deletion", terminal.deleteLater)
-                self.terminal = None
+                    _run_cleanup_step("remove terminal widget", lambda target=terminal: stack.removeWidget(target))
+                delete_later = getattr(terminal, "deleteLater", None)
+                if callable(delete_later):
+                    _run_cleanup_step("schedule terminal deletion", delete_later)
+            self.session_terminals = {}
+            self.terminal = None
 
             broker = getattr(self, "broker", None)
             if close_broker and broker is not None:
@@ -11099,8 +11855,11 @@ class AppController(QMainWindow):
     async def logout(self):
         try:
             await self._cleanup_session(stop_trading=True, close_broker=True)
+            if getattr(self, "session_manager", None) is not None:
+                await self.session_manager.close_all()
 
             self.connected = False
+            self.active_session_id = None
             self.connection_signal.emit("disconnected")
 
         finally:
@@ -11116,6 +11875,8 @@ class AppController(QMainWindow):
                 close_broker=True,
                 wait_for_background_workers=True,
             )
+            if getattr(self, "session_manager", None) is not None:
+                await self.session_manager.close_all()
         except Exception:
             self.logger.exception("Exit cleanup failed")
         finally:

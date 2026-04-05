@@ -10,9 +10,9 @@ class Candle(storage_db.Base):
     __tablename__ = "candles"
 
     id = Column(Integer, primary_key=True)
-    exchange = Column(String, index=True)
-    symbol = Column(String, index=True, nullable=False)
-    timeframe = Column(String, index=True)
+    exchange = Column(String(255), index=True)
+    symbol = Column(String(255), index=True, nullable=False)
+    timeframe = Column(String(255), index=True)
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)

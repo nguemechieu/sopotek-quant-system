@@ -19,8 +19,8 @@ class EquitySnapshot(storage_db.Base):
     __tablename__ = "equity_snapshots"
 
     id = Column(Integer, primary_key=True, index=True)
-    exchange = Column(String, index=True)
-    account_label = Column(String, index=True)
+    exchange = Column(String(255), index=True)
+    account_label = Column(String(255), index=True)
     equity = Column(Float, index=True)
     balance = Column(Float)
     free_margin = Column(Float)

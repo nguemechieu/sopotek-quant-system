@@ -4,11 +4,7 @@
   <img alt="Sopotek Trading AI logo" src="src/assets/logo.png" width="170" height="170">
 </p>
 
-Sopotek Trading AI is a next-generation trading workstation engineered by Sopotek Corporation to bridge the gap between retail platforms and institutional trading systems.
-
-The platform combines real-time market connectivity, AI-driven decision support, execution infrastructure, and risk-aware automation into a single desktop environment.
-
-With integrated backtesting, multi-asset support, and intelligent workflow automation, Sopotek empowers traders to scale from manual strategies to fully autonomous trading systems.
+Sopotek Trading AI is a desktop trading workstation built by Sopotek Corporation. It combines broker connectivity, live charting, manual and AI-assisted execution, order and position tracking, backtesting, operational safety tooling, Telegram integration, and OpenAI-assisted workflows in one PySide6 application.
 
 ## Version And Status
 
@@ -28,6 +24,25 @@ With integrated backtesting, multi-asset support, and intelligent workflow autom
 - Open orders, positions, trade log, closed journal, trade review, position analysis, performance analytics, system health tools, and Coinbase-style recent market trades in the Order Book dock
 - Risk and behavior protection including risk profiles, a dedicated `Risk` menu, behavior guard, kill switch, drawdown-aware restrictions, and session health status
 - Backtesting, strategy optimization, journaling, trade checklist workflow, and local persistence through SQLite and QSettings, including date-range selection, animated in-progress equity graphing, and user-selected report export folders
+
+## Adaptive Runtime Stack
+
+The current Sopotek runtime also includes an event-driven AI supervision layer for live and paper sessions:
+
+- `TraderAgent` acts as a profile-aware digital trader that aggregates `Trend`, `Mean Reversion`, `Breakout`, and `ML` signals, applies investor profile constraints, and produces a final `BUY`, `SELL`, `HOLD`, or `SKIP` decision with confidence and reasoning
+- `MarketHoursEngine` blocks trading outside supported crypto, forex, stock, and futures windows, including NYSE holiday awareness and forex session/liquidity classification
+- `ProfitProtectionEngine` manages open positions with trailing stops, break-even promotion, partial profit taking, time-based exits, volatility exits, and ML-guided reduce or exit decisions
+- `TradeOutcomeTrainingPipeline` plus the `sopotek.ml` modules provide feature engineering, dataset building, training, inference, model registry support, and retraining hooks for self-improving trade filters
+- `RegimeEngine`, order-book intelligence, and `ReasoningAgent` add market-regime classification, bid or ask imbalance features, liquidity context, and explainable signal narratives
+- `TradeJournalAIEngine` automatically reviews closed trades and summarizes why trades lost, what worked, and what to improve next
+- `AlertingEngine` extends Telegram-oriented operations with normalized email and push alerts, while `MobileDashboardService` writes mobile-friendly runtime snapshots to disk
+- `FeatureStore` persists live runtime outputs such as feature vectors, model scores, reasoning, alerts, trader decisions, and trade-journal streams under `data/feature_store`
+
+### Runtime Outputs
+
+- `data/feature_store/*.jsonl` captures feature vectors, model scores, regimes, reasoning decisions, trader decisions, alerts, mobile dashboard updates, and trade-journal events
+- `data/mobile_dashboard/snapshot.json` and `data/mobile_dashboard/summary.json` expose a mobile-friendly view of equity, positions, decisions, executions, alerts, and the latest trade-journal summary
+- SQLite-backed quant persistence stores trade feedback, journal entries, journal summaries, and related model artifacts for later review and retraining
 
 ## Key Workflows
 
@@ -138,9 +153,6 @@ python main.py
 The repository root `main.py` is the recommended launcher from the workspace root.
 It bootstraps the desktop app and delegates to the real entry point at `src/main.py`.
 
-For one-click launch on Windows, double-click `Launch Sopotek Trading AI.cmd`.
-That launcher uses the repo's vendored desktop dependencies, starts the UI on the host machine, and writes timestamped startup logs under `logs/`. The newest log file paths are recorded in `logs/host-ui-latest.txt`.
-
 ### 3. Start Safely
 1. Open the dashboard.
 2. Choose broker type, exchange, and mode.
@@ -161,6 +173,7 @@ That launcher uses the repo's vendored desktop dependencies, starts the UI on th
 - [Getting Started](docs/getting-started.md)
 - [Full App Guide](docs/FULL_APP_GUIDE.md)
 - [Release Notes](docs/release-notes.md)
+- [Adaptive Runtime Guide](docs/adaptive-runtime.md)
 - [Architecture](docs/architecture.md)
 - [Strategies](docs/strategy_docs.md)
 - [Brokers And Modes](docs/brokers-and-modes.md)
@@ -254,37 +267,35 @@ Run the local MySQL-backed stack:
 docker compose up -d mysql app
 ```
 
-Run the desktop UI in your browser over local HTTP:
-
-```powershell
-docker compose --profile browser up app-http
-```
-
-Then open:
-
-```text
-http://localhost:6080/vnc.html?autoconnect=1&resize=scale
-```
-
-The browser UI is published only on `127.0.0.1` by default, so it is local-machine only unless you deliberately change the port binding.
-The browser profile forces software rendering and disables embedded Qt WebEngine panels inside the container, so desk tools such as Trader TV fall back to browser-launch links instead of in-app TradingView or YouTube embeds. This avoids the common Vulkan / Chromium crashes that happen under Xvfb and noVNC.
-The browser profile also starts an X11 clipboard bridge so copy and paste work more reliably inside the containerized Qt desktop. Because this is still running through noVNC in a browser tab, your browser may block direct `Ctrl+V` access to the system clipboard. If that happens, use the noVNC clipboard panel to paste text into the app.
 Run the headless profile:
 
 ```powershell
 docker compose --profile headless up app-headless
 ```
 
-Compose defaults the app to the local `mysql` service using `mysql+pymysql://`. Override `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, or `MYSQL_PORT` in your shell or `.env` before launch if you want different local credentials.
+Run the browser profile:
 
-When you configure the database in the app Preferences, use one of these URLs:
+```powershell
+docker compose --profile browser up -d app-http
+```
 
-- App running on Windows or directly on the host:
-  `mysql+pymysql://sopotek:sopotek_local@localhost:3306/sopotek_trading?charset=utf8mb4`
-- App running inside the same Docker Compose stack:
-  `mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4`
+Then open the browser UI:
 
-If you changed `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, or `MYSQL_PORT` in `.env`, replace those values in the URL.
+```text
+http://localhost:6080/vnc.html?autoconnect=1&resize=off
+```
+
+The browser profile defaults `NOVNC_RESIZE_MODE` to `off` so your browser scrollbars can reach the full virtual desktop. Set `NOVNC_RESIZE_MODE=scale` before launch if you prefer the UI to shrink to fit the browser window instead.
+
+Compose defaults the app to the local `mysql` service using a SQLAlchemy URL such as `mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4`. Override `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`, or `MYSQL_PORT` in your shell or `.env` before launch to change the local container defaults or the host port mapping. If you want Sopotek to connect to an external MySQL instance instead, set `SOPOTEK_DATABASE_URL` directly, for example `mysql+pymysql://user:secret@db-host:3306/sopotek_trading?charset=utf8mb4`.
+
+Those `MYSQL_*` values only initialize the bundled MySQL container the first time the `mysql_data` volume is created. If you later change the credentials and start seeing `Access denied for user ...` from the app container, the existing volume still contains the older MySQL accounts. Reuse the original credentials if you need the saved local data, or recreate the local volume for a fresh dev database:
+
+```powershell
+docker compose down -v
+docker compose up -d mysql app
+```
+
 ## CI And Release Workflows
 
 - `CI`: runs flake8, full pytest coverage, package build validation, and Docker image smoke checks on pull requests and pushes to `master`.

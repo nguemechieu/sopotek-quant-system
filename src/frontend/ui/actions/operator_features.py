@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 
 WORKSPACE_DOCKS = (
     "market_watch_dock",
+    "tick_chart_dock",
+    "session_tabs_dock",
     "positions_dock",
     "trade_log_dock",
     "orderbook_dock",
@@ -36,23 +38,55 @@ WORKSPACE_DOCKS = (
     "system_console_dock",
     "system_status_dock",
 )
-TOOL_WINDOWS = {
-    "performance_analytics",
-    "closed_trade_journal",
-    "trade_journal_review",
-    "portfolio_exposure",
-    "position_analysis",
-    "trade_recommendations",
-    "quant_pm",
-    "system_health",
-    "trade_checklist",
-    "market_chat",
-    "ml_monitor",
-    "logs",
-    "notification_center",
-    "agent_timeline",
-    "symbol_universe",
+# Detached subwindows have historically mixed workspace-facing names such as
+# "logs" with raw window keys such as "system_logs". Normalize both forms so
+# save/restore and workspace presets can manage the full tool-window set.
+TOOL_WINDOW_ALIASES = {
+    "agent_timeline": "agent_timeline",
+    "api_reference": "api_reference",
+    "application_settings": "application_settings",
+    "backtesting_workspace": "backtesting_workspace",
+    "closed_journal": "closed_trade_journal",
+    "closed_trade_journal": "closed_trade_journal",
+    "docs": "help_documentation",
+    "documentation": "help_documentation",
+    "education_trader_tv": "education_trader_tv",
+    "help_documentation": "help_documentation",
+    "logs": "logs",
+    "manual_trade": "manual_trade_ticket",
+    "manual_trade_ticket": "manual_trade_ticket",
+    "market_chat": "market_chat",
+    "market_chatgpt": "market_chat",
+    "ml_monitor": "ml_monitor",
+    "ml_research": "ml_research_lab",
+    "ml_research_lab": "ml_research_lab",
+    "notification": "notification_center",
+    "notifications": "notification_center",
+    "notification_center": "notification_center",
+    "performance": "performance_analytics",
+    "performance_analytics": "performance_analytics",
+    "portfolio_exposure": "portfolio_exposure",
+    "position_analysis": "position_analysis",
+    "quant_pm": "quant_pm",
+    "risk_settings": "application_settings",
+    "settings": "application_settings",
+    "stellar_asset_explorer": "stellar_asset_explorer",
+    "strategy_assigner": "strategy_assignments",
+    "strategy_assignments": "strategy_assignments",
+    "strategy_optimization": "strategy_optimization",
+    "symbol_universe": "symbol_universe",
+    "system_health": "system_health",
+    "system_logs": "logs",
+    "trade_checklist": "trade_checklist",
+    "trade_journal_review": "trade_journal_review",
+    "trader_agent": "trader_agent_monitor",
+    "traderagent": "trader_agent_monitor",
+    "trader_agent_monitor": "trader_agent_monitor",
+    "trader_agent_timeline": "trader_agent_monitor",
+    "trade_review": "trade_review",
+    "trade_recommendations": "trade_recommendations",
 }
+TOOL_WINDOWS = set(TOOL_WINDOW_ALIASES.values())
 WORKSPACE_PRESETS = {
     "trading": {
         "docks": {"market_watch_dock", "positions_dock", "trade_log_dock", "orderbook_dock"},
@@ -74,6 +108,8 @@ WORKSPACE_PRESETS = {
 
 PANEL_ACTION_SPECS = (
     ("action_market_watch_panel", "Market Watch", "market_watch_dock"),
+    ("action_tick_chart_panel", "Tick Chart", "tick_chart_dock"),
+    ("action_session_tabs_panel", "Sessions", "session_tabs_dock"),
     ("action_positions_panel", "Positions", "positions_dock"),
     ("action_open_orders_panel", "Open Orders", "open_orders_dock"),
     ("action_trade_log_panel", "Trade Log", "trade_log_dock"),
@@ -108,6 +144,15 @@ def install_terminal_operator_features(Terminal):
         if not callable(value):
             return None
         return cast(Callable[..., Any], value)(*args, **kwargs)
+
+    def format_compact_number(value: object) -> str:
+        try:
+            number = float(value)
+        except Exception:
+            return "-"
+        if abs(number) >= 1000:
+            return f"{number:,.2f}"
+        return f"{number:.2f}"
 
     def workspace_context_key(self):
         controller = getattr(self, "controller", None)
@@ -1243,6 +1288,395 @@ def install_terminal_operator_features(Terminal):
             window._agent_timeline_filter.setFocus()
         return window
 
+    def trader_agent_monitor_rows(self, limit=300):
+        controller = getattr(self, "controller", None)
+        if controller is None or not hasattr(controller, "live_agent_runtime_feed"):
+            return []
+        rows = list(controller.live_agent_runtime_feed(limit=limit) or [])
+        decision_rows = []
+        for row in rows:
+            payload = dict((row or {}).get("payload") or {}) if isinstance((row or {}).get("payload"), dict) else {}
+            event_type = str((row or {}).get("event_type") or "").strip().upper()
+            agent_name = str((row or {}).get("agent_name") or "").strip().lower()
+            if event_type != "DECISION_EVENT" and agent_name != "traderagent" and not str(payload.get("profile_id") or "").strip():
+                continue
+            decision_rows.append(dict(row))
+        return decision_rows
+
+    def selected_trader_agent_monitor_row(self, window=None):
+        window = window or (getattr(self, "detached_tool_windows", {}) or {}).get("trader_agent_monitor")
+        if not self._is_qt_object_alive(window):
+            return {}
+        tree = getattr(window, "_trader_agent_monitor_tree", None)
+        if tree is None:
+            return {}
+        item = tree.currentItem()
+        if item is None:
+            return {}
+        raw = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if not raw and item.parent() is not None:
+            raw = item.parent().data(0, Qt.ItemDataRole.UserRole + 1)
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(str(raw))
+        except Exception:
+            payload = {}
+        return payload if isinstance(payload, dict) else {}
+
+    def populate_trader_agent_monitor_filters(self, window, rows):
+        if not self._is_qt_object_alive(window):
+            return
+        profile_combo = getattr(window, "_trader_agent_monitor_profile_filter", None)
+        action_combo = getattr(window, "_trader_agent_monitor_action_filter", None)
+        strategy_combo = getattr(window, "_trader_agent_monitor_strategy_filter", None)
+        if any(combo is None for combo in (profile_combo, action_combo, strategy_combo)):
+            return
+
+        def refill(combo, default_label, values):
+            current = str(combo.currentText() or "").strip()
+            blocked = combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(default_label)
+            for value in values:
+                combo.addItem(value)
+            if current and combo.findText(current) >= 0:
+                combo.setCurrentText(current)
+            else:
+                combo.setCurrentIndex(0)
+            combo.blockSignals(blocked)
+
+        refill(
+            profile_combo,
+            "All Profiles",
+            sorted({str((row or {}).get("profile_id") or "").strip() for row in rows if str((row or {}).get("profile_id") or "").strip()}),
+        )
+        refill(
+            action_combo,
+            "All Actions",
+            sorted({str((row or {}).get("action") or "").strip().upper() for row in rows if str((row or {}).get("action") or "").strip()}),
+        )
+        refill(
+            strategy_combo,
+            "All Strategies",
+            sorted({str((row or {}).get("strategy_name") or "").strip() for row in rows if str((row or {}).get("strategy_name") or "").strip()}),
+        )
+
+    def refresh_trader_agent_monitor_details(self, window=None):
+        window = window or (getattr(self, "detached_tool_windows", {}) or {}).get("trader_agent_monitor")
+        if not self._is_qt_object_alive(window):
+            return
+        detail_browser = getattr(window, "_trader_agent_monitor_detail_browser", None)
+        if detail_browser is None:
+            return
+
+        row = self._selected_trader_agent_monitor_row(window)
+        if not row:
+            detail_browser.setPlainText("Select a TraderAgent decision to inspect its live reasoning and payload.")
+            return
+
+        constraints = ", ".join(str(item or "").strip() for item in list(row.get("applied_constraints", []) or []) if str(item or "").strip()) or "None"
+        votes = dict(row.get("votes") or {}) if isinstance(row.get("votes"), dict) else {}
+        features = dict(row.get("features") or {}) if isinstance(row.get("features"), dict) else {}
+        metadata = dict(row.get("metadata") or {}) if isinstance(row.get("metadata"), dict) else {}
+        payload = row.get("payload")
+        pretty_payload = json.dumps(payload, indent=2, sort_keys=True, default=str) if isinstance(payload, dict) else str(payload or "")
+        vote_lines = [f"  {key}: {value:.2f}" if isinstance(value, (int, float)) else f"  {key}: {value}" for key, value in votes.items()]
+        feature_lines = [f"  {key}: {value:.6f}" if isinstance(value, (int, float)) else f"  {key}: {value}" for key, value in features.items()]
+        metadata_text = json.dumps(metadata, indent=2, sort_keys=True, default=str) if metadata else "{}"
+        detail_lines = [
+            f"Profile: {str(row.get('profile_id') or '').strip() or '-'}",
+            f"Symbol: {str(row.get('symbol') or '').strip() or '-'}",
+            f"Action: {str(row.get('action') or '').strip().upper() or '-'}",
+            f"Strategy: {str(row.get('strategy_name') or '').strip() or '-'}",
+            f"Confidence: {format_compact_number(row.get('confidence'))}",
+            f"Model Probability: {format_compact_number(row.get('model_probability'))}",
+            f"Quantity: {format_compact_number(row.get('quantity'))}",
+            f"Price: {format_compact_number(row.get('price'))}",
+            f"Timestamp: {str(row.get('timestamp_label') or '').strip() or '-'}",
+            f"Constraints: {constraints}",
+            "",
+            "Reasoning:",
+            str(row.get("reason") or row.get("message") or "No reasoning recorded.").strip(),
+            "",
+            "Votes:",
+            "\n".join(vote_lines) if vote_lines else "  None",
+            "",
+            "Features:",
+            "\n".join(feature_lines) if feature_lines else "  None",
+            "",
+            "Metadata:",
+            metadata_text,
+            "",
+            "Payload:",
+            pretty_payload or "{}",
+        ]
+        detail_browser.setPlainText("\n".join(detail_lines).strip())
+
+    def refresh_trader_agent_monitor_window(self, window=None):
+        window = window or (getattr(self, "detached_tool_windows", {}) or {}).get("trader_agent_monitor")
+        if not self._is_qt_object_alive(window):
+            return
+        tree = getattr(window, "_trader_agent_monitor_tree", None)
+        filter_input = getattr(window, "_trader_agent_monitor_filter", None)
+        profile_filter = getattr(window, "_trader_agent_monitor_profile_filter", None)
+        action_filter = getattr(window, "_trader_agent_monitor_action_filter", None)
+        strategy_filter = getattr(window, "_trader_agent_monitor_strategy_filter", None)
+        summary = getattr(window, "_trader_agent_monitor_summary", None)
+        score_label = getattr(window, "_trader_agent_monitor_score_label", None)
+        profile_label = getattr(window, "_trader_agent_monitor_profile_label", None)
+        if any(widget is None for widget in (tree, filter_input, profile_filter, action_filter, strategy_filter, summary, score_label, profile_label)):
+            return
+
+        rows = self._trader_agent_monitor_rows(limit=400)
+        self._populate_trader_agent_monitor_filters(window, rows)
+
+        selected_profile = str(profile_filter.currentText() or "").strip()
+        if selected_profile and selected_profile != "All Profiles":
+            rows = [row for row in rows if str((row or {}).get("profile_id") or "").strip() == selected_profile]
+
+        selected_action_label = str(action_filter.currentText() or "").strip()
+        if selected_action_label and selected_action_label != "All Actions":
+            selected_action = selected_action_label.upper()
+            rows = [row for row in rows if str((row or {}).get("action") or "").strip().upper() == selected_action]
+        else:
+            selected_action = ""
+
+        selected_strategy = str(strategy_filter.currentText() or "").strip()
+        if selected_strategy and selected_strategy != "All Strategies":
+            rows = [row for row in rows if str((row or {}).get("strategy_name") or "").strip() == selected_strategy]
+
+        query = str(filter_input.text() or "").strip().lower()
+        if query:
+            filtered = []
+            for row in rows:
+                haystack = " ".join(
+                    str(row.get(key) or "")
+                    for key in (
+                        "timestamp_label",
+                        "profile_id",
+                        "symbol",
+                        "action",
+                        "strategy_name",
+                        "reason",
+                        "message",
+                    )
+                ).lower()
+                if query in haystack:
+                    filtered.append(row)
+            rows = filtered
+
+        tree.clear()
+        grouped_rows = {}
+        ordered_groups = []
+        action_counts = {"BUY": 0, "SELL": 0, "HOLD": 0, "SKIP": 0}
+        visible_profiles = []
+        visible_symbols = []
+        confidence_values = []
+        action_colors = {
+            "BUY": QColor("#4ade80"),
+            "SELL": QColor("#f97316"),
+            "HOLD": QColor("#74c0fc"),
+            "SKIP": QColor("#94a3b8"),
+        }
+
+        for row in rows:
+            profile_id = str(row.get("profile_id") or "default").strip() or "default"
+            symbol = str(row.get("symbol") or "Unknown").strip() or "Unknown"
+            group_key = f"{profile_id}::{symbol}"
+            if group_key not in grouped_rows:
+                grouped_rows[group_key] = []
+                ordered_groups.append(group_key)
+            grouped_rows[group_key].append(dict(row))
+            if profile_id not in visible_profiles:
+                visible_profiles.append(profile_id)
+            if symbol not in visible_symbols:
+                visible_symbols.append(symbol)
+            action = str(row.get("action") or "").strip().upper()
+            if action in action_counts:
+                action_counts[action] += 1
+            try:
+                confidence_values.append(float(row.get("confidence")))
+            except Exception:
+                pass
+
+        top_level_to_select = None
+        selected_row = self._selected_trader_agent_monitor_row(window)
+        selected_fingerprint = json.dumps(selected_row, sort_keys=True, default=str) if selected_row else ""
+        for group_key in ordered_groups:
+            group_rows = grouped_rows.get(group_key, [])
+            latest = group_rows[0] if group_rows else {}
+            profile_id = str(latest.get("profile_id") or "default").strip() or "default"
+            symbol = str(latest.get("symbol") or "Unknown").strip() or "Unknown"
+            latest_action = str(latest.get("action") or "").strip().upper()
+            latest_reason = str(latest.get("reason") or latest.get("message") or "").strip()
+            confidence_text = format_compact_number(latest.get("confidence"))
+            model_text = format_compact_number(latest.get("model_probability"))
+            group_item = QTreeWidgetItem(
+                [
+                    str(latest.get("timestamp_label") or "-"),
+                    profile_id,
+                    symbol,
+                    latest_action or f"{len(group_rows)} decisions",
+                    str(latest.get("strategy_name") or "").strip(),
+                    confidence_text,
+                    model_text,
+                    latest_reason,
+                ]
+            )
+            group_item.setData(0, Qt.ItemDataRole.UserRole + 1, json.dumps(latest, default=str))
+            tree.addTopLevelItem(group_item)
+            for column in range(8):
+                if latest_action in action_colors:
+                    group_item.setForeground(column, action_colors[latest_action])
+
+            for row in group_rows:
+                action = str(row.get("action") or "").strip().upper()
+                reason = str(row.get("reason") or row.get("message") or "").strip()
+                child = QTreeWidgetItem(
+                    [
+                        str(row.get("timestamp_label") or "-"),
+                        str(row.get("profile_id") or "").strip(),
+                        str(row.get("symbol") or "").strip(),
+                        action,
+                        str(row.get("strategy_name") or "").strip(),
+                        format_compact_number(row.get("confidence")),
+                        format_compact_number(row.get("model_probability")),
+                        reason,
+                    ]
+                )
+                child.setData(0, Qt.ItemDataRole.UserRole + 1, json.dumps(row, default=str))
+                child.setToolTip(7, reason)
+                if action in action_colors:
+                    for column in range(8):
+                        child.setForeground(column, action_colors[action])
+                group_item.addChild(child)
+                if selected_fingerprint and json.dumps(row, sort_keys=True, default=str) == selected_fingerprint:
+                    top_level_to_select = child
+            group_item.setExpanded(True)
+
+        for column in range(7):
+            tree.resizeColumnToContents(column)
+        if top_level_to_select is not None:
+            tree.setCurrentItem(top_level_to_select)
+        elif tree.topLevelItemCount() > 0:
+            first_group = tree.topLevelItem(0)
+            tree.setCurrentItem(first_group.child(0) or first_group)
+
+        average_confidence = sum(confidence_values) / len(confidence_values) if confidence_values else 0.0
+        active_filters = []
+        if selected_profile and selected_profile != "All Profiles":
+            active_filters.append(selected_profile)
+        if selected_action_label and selected_action_label != "All Actions":
+            active_filters.append(selected_action)
+        if selected_strategy and selected_strategy != "All Strategies":
+            active_filters.append(selected_strategy)
+        suffix = f" | Filters: {', '.join(active_filters)}" if active_filters else ""
+        summary.setText(
+            f"{len(rows)} TraderAgent decisions across {len(visible_symbols)} symbols and {len(visible_profiles)} profiles.{suffix}"
+        )
+        score_label.setText(
+            "Action Mix\n"
+            f"BUY: {action_counts['BUY']}  |  SELL: {action_counts['SELL']}  |  HOLD: {action_counts['HOLD']}  |  SKIP: {action_counts['SKIP']}"
+        )
+        profile_label.setText(
+            "Profile Coverage\n"
+            f"Profiles: {', '.join(visible_profiles[:4]) if visible_profiles else 'No active profiles'}\n"
+            f"Avg confidence: {average_confidence:.2f}"
+        )
+        window._trader_agent_monitor_current_rows = [dict(row) for row in rows]
+        self._refresh_trader_agent_monitor_details(window)
+
+    def open_trader_agent_monitor(self):
+        window = self._get_or_create_tool_window("trader_agent_monitor", "Trader Agent Monitor", width=1160, height=640)
+        if getattr(window, "_trader_agent_monitor_container", None) is None:
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(12, 12, 12, 12)
+            layout.setSpacing(10)
+            summary = QLabel("Watch the TraderAgent think in real time across profiles, symbols, model confidence, and final actions.")
+            summary.setWordWrap(True)
+            summary.setStyleSheet("color: #d9e6f7; background-color: #101a2d; border: 1px solid #20324d; border-radius: 12px; padding: 10px;")
+            layout.addWidget(summary)
+            controls = QHBoxLayout()
+            filter_input = QLineEdit()
+            filter_input.setPlaceholderText("Filter by profile, symbol, action, strategy, or reasoning")
+            filter_input.textChanged.connect(lambda *_: self._refresh_trader_agent_monitor_window(window))
+            controls.addWidget(filter_input, 1)
+            profile_filter = QComboBox()
+            profile_filter.addItem("All Profiles")
+            profile_filter.currentTextChanged.connect(lambda *_: self._refresh_trader_agent_monitor_window(window))
+            controls.addWidget(profile_filter)
+            action_filter = QComboBox()
+            action_filter.addItem("All Actions")
+            action_filter.currentTextChanged.connect(lambda *_: self._refresh_trader_agent_monitor_window(window))
+            controls.addWidget(action_filter)
+            strategy_filter = QComboBox()
+            strategy_filter.addItem("All Strategies")
+            strategy_filter.currentTextChanged.connect(lambda *_: self._refresh_trader_agent_monitor_window(window))
+            controls.addWidget(strategy_filter)
+            refresh_btn = QPushButton("Refresh")
+            refresh_btn.clicked.connect(lambda: self._refresh_trader_agent_monitor_window(window))
+            controls.addWidget(refresh_btn)
+            clear_filters_btn = QPushButton("Clear Filters")
+            clear_filters_btn.clicked.connect(
+                lambda: (
+                    filter_input.clear(),
+                    profile_filter.setCurrentIndex(0),
+                    action_filter.setCurrentIndex(0),
+                    strategy_filter.setCurrentIndex(0),
+                    self._refresh_trader_agent_monitor_window(window),
+                )
+            )
+            controls.addWidget(clear_filters_btn)
+            open_timeline_btn = QPushButton("Open Live Agent Timeline")
+            open_timeline_btn.clicked.connect(lambda: invoke_callable(getattr(self, "_open_agent_timeline", None)))
+            controls.addWidget(open_timeline_btn)
+            layout.addLayout(controls)
+            score_row = QHBoxLayout()
+            score_label = QLabel("Action Mix\nBUY: 0  |  SELL: 0  |  HOLD: 0  |  SKIP: 0")
+            score_label.setWordWrap(True)
+            score_label.setStyleSheet("color: #d9e6f7; background-color: #101a2d; border: 1px solid #20324d; border-radius: 10px; padding: 10px;")
+            score_row.addWidget(score_label, 1)
+            profile_label = QLabel("Profile Coverage\nProfiles: No active profiles\nAvg confidence: 0.00")
+            profile_label.setWordWrap(True)
+            profile_label.setStyleSheet("color: #d9e6f7; background-color: #101a2d; border: 1px solid #20324d; border-radius: 10px; padding: 10px;")
+            score_row.addWidget(profile_label, 1)
+            layout.addLayout(score_row)
+            tree = QTreeWidget()
+            tree.setColumnCount(8)
+            tree.setHeaderLabels(["Time", "Profile", "Symbol", "Action", "Strategy", "Confidence", "Model", "Reasoning"])
+            tree.setRootIsDecorated(True)
+            tree.setUniformRowHeights(True)
+            tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            tree.itemSelectionChanged.connect(lambda: self._refresh_trader_agent_monitor_details(window))
+            layout.addWidget(tree, 1)
+            detail_browser = QTextBrowser()
+            detail_browser.setMinimumHeight(200)
+            detail_browser.setStyleSheet("background-color: #0f1726; color: #d9e6f7; border: 1px solid #20324d; border-radius: 10px;")
+            detail_browser.setPlainText("Select a TraderAgent decision to inspect its live reasoning and payload.")
+            layout.addWidget(detail_browser)
+            window.setCentralWidget(container)
+            window._trader_agent_monitor_container = container
+            window._trader_agent_monitor_summary = summary
+            window._trader_agent_monitor_filter = filter_input
+            window._trader_agent_monitor_profile_filter = profile_filter
+            window._trader_agent_monitor_action_filter = action_filter
+            window._trader_agent_monitor_strategy_filter = strategy_filter
+            window._trader_agent_monitor_score_label = score_label
+            window._trader_agent_monitor_profile_label = profile_label
+            window._trader_agent_monitor_tree = tree
+            window._trader_agent_monitor_detail_browser = detail_browser
+            window._trader_agent_monitor_open_timeline_btn = open_timeline_btn
+            window._trader_agent_monitor_clear_filters_btn = clear_filters_btn
+        self._refresh_trader_agent_monitor_window(window)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if getattr(window, "_trader_agent_monitor_filter", None) is not None:
+            window._trader_agent_monitor_filter.setFocus()
+        return window
+
     def record_trade_notification(self, trade):
         if not isinstance(trade, dict):
             return None
@@ -1345,16 +1779,21 @@ def install_terminal_operator_features(Terminal):
         )
 
     def visible_tool_window_keys(self):
-        visible = []
+        visible = set()
         for key, window in (getattr(self, "detached_tool_windows", {}) or {}).items():
-            if key not in TOOL_WINDOWS or not self._is_qt_object_alive(window):
+            canonical_key = self._canonical_tool_window_key(key)
+            if not canonical_key or not self._is_qt_object_alive(window):
                 continue
             try:
                 if window.isVisible():
-                    visible.append(key)
+                    visible.add(canonical_key)
             except Exception:
                 continue
-        return sorted(set(visible))
+        return sorted(visible)
+
+    def canonical_tool_window_key(self, key):
+        normalized = str(key or "").strip().lower()
+        return TOOL_WINDOW_ALIASES.get(normalized, "")
 
     def save_workspace_layout(self, slot="last"):
         settings = getattr(self, "settings", None)
@@ -1404,13 +1843,21 @@ def install_terminal_operator_features(Terminal):
                     continue
                 dock.show() if attr_name in visible_docks else dock.hide()
         try:
-            open_tools = set(json.loads(open_tools_raw or "[]"))
+            open_tools = {
+                canonical
+                for canonical in (
+                    self._canonical_tool_window_key(key)
+                    for key in json.loads(open_tools_raw or "[]")
+                )
+                if canonical
+            }
         except Exception:
             open_tools = set()
         for key in open_tools:
             self._open_tool_window_by_key(key)
         for key, window in list((getattr(self, "detached_tool_windows", {}) or {}).items()):
-            if key in TOOL_WINDOWS and key not in open_tools and self._is_qt_object_alive(window):
+            canonical_key = self._canonical_tool_window_key(key)
+            if canonical_key and canonical_key not in open_tools and self._is_qt_object_alive(window):
                 try:
                     window.hide()
                 except Exception:
@@ -1433,24 +1880,43 @@ def install_terminal_operator_features(Terminal):
         return restored
 
     def open_tool_window_by_key(self, key):
+        requested_key = str(key or "").strip().lower()
+        canonical_key = self._canonical_tool_window_key(requested_key)
+        if not canonical_key:
+            return None
         actions = {
-            "performance_analytics": getattr(self, "_open_performance", None),
-            "closed_trade_journal": getattr(self, "_open_closed_journal_window", None),
-            "trade_journal_review": getattr(self, "_open_trade_journal_review_window", None),
-            "portfolio_exposure": getattr(self, "_show_portfolio_exposure", None),
-            "position_analysis": getattr(self, "_open_position_analysis_window", None),
-            "trade_recommendations": getattr(self, "_open_recommendations_window", None),
-            "quant_pm": getattr(self, "_open_quant_pm_window", None),
-            "system_health": getattr(self, "_open_system_health_window", None),
-            "trade_checklist": getattr(self, "_open_trade_checklist_window", None),
-            "market_chat": getattr(self, "_open_market_chat_window", None),
-            "ml_monitor": getattr(self, "_open_ml_monitor", None),
-            "logs": getattr(self, "_open_logs", None),
-            "notification_center": getattr(self, "_open_notification_center", None),
-            "agent_timeline": getattr(self, "_open_agent_timeline", None),
-            "symbol_universe": getattr(self, "_open_symbol_universe", None),
+            "performance_analytics": lambda: invoke_callable(getattr(self, "_open_performance", None)),
+            "closed_trade_journal": lambda: invoke_callable(getattr(self, "_open_closed_journal_window", None)),
+            "trade_journal_review": lambda: invoke_callable(getattr(self, "_open_trade_journal_review_window", None)),
+            "portfolio_exposure": lambda: invoke_callable(getattr(self, "_show_portfolio_exposure", None)),
+            "position_analysis": lambda: invoke_callable(getattr(self, "_open_position_analysis_window", None)),
+            "trade_recommendations": lambda: invoke_callable(getattr(self, "_open_recommendations_window", None)),
+            "quant_pm": lambda: invoke_callable(getattr(self, "_open_quant_pm_window", None)),
+            "system_health": lambda: invoke_callable(getattr(self, "_open_system_health_window", None)),
+            "trade_checklist": lambda: invoke_callable(getattr(self, "_open_trade_checklist_window", None)),
+            "market_chat": lambda: invoke_callable(getattr(self, "_open_market_chat_window", None)),
+            "ml_monitor": lambda: invoke_callable(getattr(self, "_open_ml_monitor", None)),
+            "logs": lambda: invoke_callable(getattr(self, "_open_logs", None)),
+            "notification_center": lambda: invoke_callable(getattr(self, "_open_notification_center", None)),
+            "agent_timeline": lambda: invoke_callable(getattr(self, "_open_agent_timeline", None)),
+            "trader_agent_monitor": lambda: invoke_callable(getattr(self, "_open_trader_agent_monitor", None)),
+            "symbol_universe": lambda: invoke_callable(getattr(self, "_open_symbol_universe", None)),
+            "manual_trade_ticket": lambda: invoke_callable(getattr(self, "_open_manual_trade", None)),
+            "application_settings": lambda: invoke_callable(getattr(self, "_show_settings_window", None)),
+            "strategy_optimization": lambda: invoke_callable(getattr(self, "_optimize_strategy", None)),
+            "backtesting_workspace": lambda: invoke_callable(getattr(self, "_show_backtest_window", None)),
+            "strategy_assignments": lambda: invoke_callable(getattr(self, "_open_strategy_assignment_window", None)),
+            "stellar_asset_explorer": lambda: invoke_callable(getattr(self, "_open_stellar_asset_explorer_window", None)),
+            "trade_review": lambda: invoke_callable(getattr(self, "_open_trade_review_window", None), {}),
+            "education_trader_tv": lambda: invoke_callable(getattr(self, "_open_trader_tv_window", None)),
+            "help_documentation": lambda: invoke_callable(getattr(self, "_open_docs", None)),
+            "api_reference": lambda: invoke_callable(getattr(self, "_open_api_docs", None)),
+            "ml_research_lab": lambda: invoke_callable(getattr(self, "_open_ml_research_window", None)),
         }
-        handler = actions.get(str(key or "").strip())
+        alias_actions = {
+            "risk_settings": lambda: invoke_callable(getattr(self, "_open_risk_settings", None)),
+        }
+        handler = alias_actions.get(requested_key) or actions.get(canonical_key)
         return invoke_callable(handler)
 
     def apply_workspace_preset(self, name):
@@ -1464,13 +1930,17 @@ def install_terminal_operator_features(Terminal):
                 continue
             dock.show() if attr_name in visible_docks else dock.hide()
         for key, window in list((getattr(self, "detached_tool_windows", {}) or {}).items()):
-            if key in TOOL_WINDOWS and key not in open_tools and self._is_qt_object_alive(window):
+            canonical_key = self._canonical_tool_window_key(key)
+            if canonical_key and canonical_key not in open_tools and self._is_qt_object_alive(window):
                 try:
                     window.hide()
                 except Exception:
                     pass
         for key in open_tools:
             self._open_tool_window_by_key(key)
+        normalize_workspace = getattr(self, "_normalize_workspace_sidebar_docks", None)
+        if callable(normalize_workspace):
+            normalize_workspace()
         self._queue_terminal_layout_fit()
         self._save_workspace_layout("last")
         self._push_notification("Workspace preset applied", f"{preset_name.title()} workspace is now active.", level="INFO", source="workspace", dedupe_seconds=2.0)
@@ -1603,6 +2073,7 @@ def install_terminal_operator_features(Terminal):
             {"title": "Notification Center", "description": "Review fills, rejects, disconnects, and guard alerts.", "keywords": "notifications alerts fills rejects disconnect guard", "handler": self._open_notification_center},
             {"title": "Symbol Universe", "description": "Inspect active, watchlist, catalog, and discovery-batch tiers.", "keywords": "symbol universe tiers active watchlist catalog discovery batch broker", "handler": self._open_symbol_universe},
             {"title": "Live Agent Timeline", "description": "Watch the live decision flow across symbols and agents.", "keywords": "agent timeline live runtime signal risk execution", "handler": self._open_agent_timeline},
+            {"title": "Trader Agent Monitor", "description": "Watch TraderAgent decisions, confidence, and reasoning in real time.", "keywords": "trader agent monitor decision profile confidence reasoning", "handler": self._open_trader_agent_monitor},
             {"title": "Performance Analytics", "description": "Open the performance analysis workspace.", "keywords": "performance analytics ledger equity pnl", "handler": self._open_performance},
             {"title": "Portfolio Exposure", "description": "Open the portfolio exposure view.", "keywords": "portfolio exposure risk", "handler": self._show_portfolio_exposure},
             {"title": "Position Analysis", "description": "Inspect open positions and account metrics.", "keywords": "position analysis risk", "handler": self._open_position_analysis_window},
@@ -1769,6 +2240,8 @@ def install_terminal_operator_features(Terminal):
             self.action_agent_timeline = QAction("Live Agent Timeline", self)
             self.action_agent_timeline.setShortcut("Ctrl+Shift+L")
             self.action_agent_timeline.triggered.connect(self._open_agent_timeline)
+            self.action_trader_agent_monitor = QAction("Trader Agent Monitor", self)
+            self.action_trader_agent_monitor.triggered.connect(self._open_trader_agent_monitor)
             self.action_command_palette = QAction("Command Palette", self)
             self.action_command_palette.setShortcut("Ctrl+K")
             self.action_command_palette.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -1806,6 +2279,9 @@ def install_terminal_operator_features(Terminal):
         self.review_menu.addAction(self.action_agent_timeline)
         self.research_menu.addAction(self.action_agent_timeline)
         self.tools_menu.addAction(self.action_agent_timeline)
+        self.review_menu.addAction(self.action_trader_agent_monitor)
+        self.research_menu.addAction(self.action_trader_agent_monitor)
+        self.tools_menu.addAction(self.action_trader_agent_monitor)
         self.tools_menu.addAction(self.action_symbol_universe)
         self.tools_menu.addAction(self.action_command_palette)
         self.charts_menu.addSeparator()
@@ -1857,7 +2333,12 @@ def install_terminal_operator_features(Terminal):
     def restore_settings(self):
         result = orig_restore_settings(self)
         self._restore_trader_memory()
-        self._restore_workspace_layout("last")
+        restored_workspace = self._restore_workspace_layout("last")
+        if not restored_workspace:
+            self._apply_default_dock_layout()
+        normalize_workspace = getattr(self, "_normalize_workspace_sidebar_docks", None)
+        if callable(normalize_workspace):
+            normalize_workspace()
         self._update_favorite_action_text()
         return result
 
@@ -1944,9 +2425,16 @@ def install_terminal_operator_features(Terminal):
     Terminal._refresh_agent_timeline_details = refresh_agent_timeline_details
     Terminal._replay_selected_agent_timeline_symbol = replay_selected_agent_timeline_symbol
     Terminal._open_agent_timeline = open_agent_timeline
+    Terminal._trader_agent_monitor_rows = trader_agent_monitor_rows
+    Terminal._selected_trader_agent_monitor_row = selected_trader_agent_monitor_row
+    Terminal._populate_trader_agent_monitor_filters = populate_trader_agent_monitor_filters
+    Terminal._refresh_trader_agent_monitor_details = refresh_trader_agent_monitor_details
+    Terminal._refresh_trader_agent_monitor_window = refresh_trader_agent_monitor_window
+    Terminal._open_trader_agent_monitor = open_trader_agent_monitor
     Terminal._record_trade_notification = record_trade_notification
     Terminal._runtime_notification_transition = runtime_notification_transition
     Terminal._refresh_runtime_notifications = refresh_runtime_notifications
+    Terminal._canonical_tool_window_key = canonical_tool_window_key
     Terminal._visible_tool_window_keys = visible_tool_window_keys
     Terminal._save_workspace_layout = save_workspace_layout
     Terminal._restore_workspace_layout = restore_workspace_layout

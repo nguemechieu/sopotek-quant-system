@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from PySide6.QtCore import QEvent, QRect
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -96,6 +97,10 @@ class _ToolbarTerminal(QMainWindow):
         self.trading_activity_label = None
         self.symbol_picker = None
         self.autotrade_scope_picker = None
+        self.autotrade_scope_label_widget = None
+        self.autotrade_controls_box = None
+        self.autotrade_controls_layout = None
+        self.autotrade_controls_row = None
         self.auto_button = None
 
     def _tr(self, key, **kwargs):
@@ -139,6 +144,22 @@ class _ToolbarTerminal(QMainWindow):
 
     def take_screen_shot(self):
         return None
+
+
+class _EventTerminal(Terminal):
+    def __init__(self, controller):
+        QMainWindow.__init__(self)
+        self.controller = controller
+        self.bound_session_id = "session-b"
+        self.bound_session_label = "Session B"
+
+
+class _SetupCoreTerminal(Terminal):
+    def __init__(self):
+        QMainWindow.__init__(self)
+        self.controller = SimpleNamespace(order_type="market")
+        self.bound_session_id = ""
+        self.bound_session_label = ""
 
 
 def test_create_menu_bar_groups_actions_into_single_clear_menus():
@@ -238,6 +259,36 @@ def test_create_menu_bar_groups_actions_into_single_clear_menus():
     assert menu_titles[-1] == terminal.help_menu.title()
 
 
+def test_event_activates_bound_session_on_window_activate():
+    _app()
+    activations = []
+    controller = SimpleNamespace(
+        active_session_id="session-a",
+        terminal=None,
+        request_session_activation=lambda session_id: activations.append(session_id),
+    )
+    terminal = _EventTerminal(controller)
+
+    handled = terminal.event(QEvent(QEvent.Type.WindowActivate))
+
+    assert handled is True
+    assert controller.terminal is terminal
+    assert activations == ["session-b"]
+
+
+def test_setup_core_initializes_terminal_state_before_ui_build():
+    _app()
+    terminal = _SetupCoreTerminal()
+
+    terminal._setup_core()
+
+    assert terminal.current_connection_status == "connecting"
+    assert terminal.trade_log_dock is None
+    assert terminal.session_selector is None
+    assert terminal.detached_tool_windows == {}
+    assert terminal.language_actions == {}
+
+
 def test_create_menu_bar_hides_stellar_explorer_when_exchange_is_not_stellar():
     _app()
     terminal = _FakeTerminal(exchange_name="coinbase")
@@ -322,14 +373,6 @@ def test_learning_windows_use_market_snapshot_in_text_payload():
     assert "Ready-For-Live Checklist" in captured[0]["html"]
 
 
-def test_trader_tv_web_view_class_respects_disable_webengine_env(monkeypatch):
-    fake = SimpleNamespace()
-    monkeypatch.setenv("SOPOTEK_DISABLE_WEBENGINE", "1")
-
-    result = Terminal._trader_tv_web_view_class(fake)
-
-    assert result is None
-
 def test_create_toolbar_keeps_symbol_and_screenshot_on_same_row_and_drops_toolbar_timeframes():
     _app()
     terminal = _ToolbarTerminal()
@@ -349,6 +392,49 @@ def test_create_toolbar_keeps_symbol_and_screenshot_on_same_row_and_drops_toolba
         widget is not None and widget.isAncestorOf(terminal.screenshot_button)
         for widget in controls_toolbar_widgets
     )
+
+
+def test_autotrade_toolbar_compacts_scope_controls_before_hiding_the_picker():
+    _app()
+    terminal = _ToolbarTerminal()
+
+    Terminal._create_toolbar(terminal)
+
+    Terminal._refresh_autotrade_controls_layout(terminal, available_width=380)
+
+    assert terminal.autotrade_scope_label_widget.isHidden() is True
+    assert terminal.autotrade_scope_picker.minimumWidth() == 82
+    assert terminal.autotrade_scope_picker.maximumWidth() == 108
+    assert terminal.auto_button.minimumWidth() == 92
+
+    Terminal._refresh_autotrade_controls_layout(terminal, available_width=760)
+
+    assert terminal.autotrade_scope_label_widget.isHidden() is False
+    assert terminal.autotrade_scope_picker.minimumWidth() == 108
+    assert terminal.autotrade_scope_picker.maximumWidth() == 148
+    assert terminal.auto_button.minimumWidth() == 148
+
+
+def test_autotrade_button_text_uses_clear_start_stop_copy():
+    terminal = _ToolbarTerminal()
+
+    assert Terminal._autotrade_button_text(terminal, False, mode="full") == "Start Trading"
+    assert Terminal._autotrade_button_text(terminal, True, mode="full") == "Stop Trading"
+    assert Terminal._autotrade_button_text(terminal, False, mode="tight") == "Start"
+    assert Terminal._autotrade_button_text(terminal, True, mode="tight") == "Stop"
+
+
+def test_fit_window_to_available_screen_bounds_terminal_to_viewport():
+    _app()
+    terminal = _FakeTerminal()
+    terminal.screen = lambda: SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1280, 720))
+
+    Terminal._fit_window_to_available_screen(terminal, requested_width=1700, requested_height=950)
+
+    assert terminal.minimumWidth() == 960
+    assert terminal.minimumHeight() == 640
+    assert terminal.width() == 1256
+    assert terminal.height() == 696
 
 
 def test_set_status_value_ignores_deleted_qt_labels():

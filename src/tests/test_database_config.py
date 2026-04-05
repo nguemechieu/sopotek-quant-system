@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy.dialects import mysql
+from sqlalchemy.schema import CreateTable
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
@@ -89,3 +91,37 @@ def test_configure_database_normalizes_remote_url_before_storing(monkeypatch):
             os.environ.pop("SOPOTEK_DATABASE_URL", None)
         else:
             os.environ["SOPOTEK_DATABASE_URL"] = previous_env
+
+
+def test_storage_metadata_compiles_for_mysql():
+    from storage import agent_decision_repository  # noqa: F401
+    from storage import equity_repository  # noqa: F401
+    from storage import market_data_repository  # noqa: F401
+    from storage import paper_trade_learning_repository  # noqa: F401
+    from storage import trade_audit_repository  # noqa: F401
+    from storage import trade_repository  # noqa: F401
+    from sopotek.storage import repository as quant_repository  # noqa: F401
+
+    expected_tables = {
+        "agent_decisions",
+        "candles",
+        "equity_snapshots",
+        "paper_trade_events",
+        "paper_trade_records",
+        "quant_feature_vectors",
+        "quant_model_scores",
+        "quant_performance_metrics",
+        "quant_trade_feedback",
+        "quant_trade_journal_entries",
+        "quant_trade_journal_summaries",
+        "trade_audits",
+        "trades",
+    }
+
+    compiled_tables = set()
+    for table in storage_db.Base.metadata.sorted_tables:
+        ddl = str(CreateTable(table).compile(dialect=mysql.dialect()))
+        assert ddl.lstrip().startswith("CREATE TABLE")
+        compiled_tables.add(table.name)
+
+    assert expected_tables.issubset(compiled_tables)
