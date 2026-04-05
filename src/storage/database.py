@@ -151,6 +151,7 @@ engine = _create_engine(DATABASE_URL)
 SessionLocal = _create_session_factory(engine)
 
 Base = declarative_base()
+_MODELS_IMPORTED = False
 
 
 def _table_columns(table_name):
@@ -234,14 +235,19 @@ def _migrate_sqlite_schema():
 
 
 def init_database():
+    global _MODELS_IMPORTED
+
     # Import models before create_all so SQLAlchemy sees the mapped tables.
-    from storage import agent_decision_repository  # noqa: F401
-    from storage import equity_repository  # noqa: F401
-    from storage import market_data_repository  # noqa: F401
-    from storage import paper_trade_learning_repository  # noqa: F401
-    from sopotek.storage import repository as sopotek_quant_repository  # noqa: F401
-    from storage import trade_audit_repository  # noqa: F401
-    from storage import trade_repository  # noqa: F401
+    if not _MODELS_IMPORTED:
+        from storage import agent_decision_repository  # noqa: F401
+        from storage import equity_repository  # noqa: F401
+        from storage import market_data_repository  # noqa: F401
+        from storage import paper_trade_learning_repository  # noqa: F401
+        from sopotek.storage import repository as sopotek_quant_repository  # noqa: F401
+        from storage import trade_audit_repository  # noqa: F401
+        from storage import trade_repository  # noqa: F401
+
+        _MODELS_IMPORTED = True
 
     _run_with_sqlite_lock_retry(lambda: Base.metadata.create_all(bind=engine))
     _migrate_sqlite_schema()

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from frontend.ui.app_controller import AppController
+from broker.paper_broker import PaperBroker
 
 
 class _CleanupTask:
@@ -36,9 +37,25 @@ class _FakeTerminal:
         self.detached_tool_windows = {}
         self._calls = calls
         self._ui_shutting_down = False
+        self.logout_requested = SimpleNamespace(connect=lambda handler: self._calls["terminal"].append(("logout_connect", handler)))
 
     def _disconnect_controller_signals(self):
         self._calls["terminal"].append("disconnect")
+
+    def show(self):
+        self._calls["terminal"].append("show")
+
+    def showNormal(self):
+        self._calls["terminal"].append("show_normal")
+
+    def raise_(self):
+        self._calls["terminal"].append("raise")
+
+    def activateWindow(self):
+        self._calls["terminal"].append("activate")
+
+    def close(self):
+        self._calls["terminal"].append("close")
 
     def deleteLater(self):
         self._calls["terminal"].append("delete")
@@ -215,3 +232,197 @@ def test_cleanup_session_continues_after_step_failure():
     assert controller.broker is None
     assert controller.ws_bus is None
     assert controller.ws_manager is None
+
+
+def test_initialize_trading_keeps_dashboard_visible(monkeypatch):
+    calls = {"terminal": [], "stack_set": [], "stack_add": [], "created_tasks": []}
+
+    class _FakeTerminalWindow(_FakeTerminal):
+        def __init__(self, controller):
+            super().__init__(calls)
+            self.controller = controller
+
+        def load_persisted_runtime_data(self):
+            return asyncio.sleep(0)
+
+    monkeypatch.setattr("frontend.ui.app_controller.Terminal", _FakeTerminalWindow)
+
+    controller = AppController.__new__(AppController)
+    controller.logger = logging.getLogger("test.app_controller.dashboard_visible")
+    controller.terminal = None
+    controller.dashboard = SimpleNamespace()
+    controller.stack = SimpleNamespace(
+        addWidget=lambda widget: calls["stack_add"].append(widget),
+        setCurrentWidget=lambda widget: calls["stack_set"].append(widget),
+    )
+    controller._fit_window_to_available_screen = lambda *args, **kwargs: calls["terminal"].append("fit")
+    controller._handle_session_registry_changed = lambda: calls["terminal"].append("refresh_registry")
+    def _record_task(coro, name):
+        calls["created_tasks"].append(name)
+        close_coro = getattr(coro, "close", None)
+        if callable(close_coro):
+            close_coro()
+        return None
+
+    controller._create_task = _record_task
+    controller._extract_balance_equity_value = lambda balances: 1000.0
+    controller.balances = {"total": {"USD": 1000.0}}
+    controller.equity_signal = SimpleNamespace(emit=lambda value: calls["terminal"].append(("equity", value)))
+    controller.run_startup_health_check = lambda: asyncio.sleep(0)
+    controller._terminal_runtime_restore_task = None
+    controller._on_logout_requested = lambda: None
+
+    asyncio.run(controller.initialize_trading())
+
+    assert controller.terminal is not None
+    assert "show" in calls["terminal"]
+    assert "raise" in calls["terminal"]
+    assert "activate" in calls["terminal"]
+    assert calls["stack_add"] == []
+    assert calls["stack_set"] == []
+    assert "terminal_runtime_restore" in calls["created_tasks"]
+    assert "startup_health_check" in calls["created_tasks"]
+
+
+def test_resolve_initial_storage_preferences_prefers_remote_env_when_unset(monkeypatch):
+    class _FakeSettings:
+        def contains(self, _key):
+            return False
+
+        def value(self, _key, default=None):
+            return default
+
+    monkeypatch.setenv(
+        "SOPOTEK_DATABASE_URL",
+        "mysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?chartset=utf8mb4",
+    )
+
+    mode, url = AppController._resolve_initial_storage_preferences(_FakeSettings())
+
+    assert mode == "remote"
+    assert url == (
+        "mysql+pymysql://sopotek:sopotek_local@mysql:3306/"
+        "sopotek_trading?charset=utf8mb4"
+    )
+
+
+def test_resolve_initial_storage_preferences_respects_saved_local_mode(monkeypatch):
+    class _FakeSettings:
+        def contains(self, key):
+            return key in {"storage/database_mode", "storage/database_url"}
+
+        def value(self, key, default=None):
+            if key == "storage/database_mode":
+                return "local"
+            if key == "storage/database_url":
+                return ""
+            return default
+
+    monkeypatch.setenv(
+        "SOPOTEK_DATABASE_URL",
+        "mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4",
+    )
+
+    mode, url = AppController._resolve_initial_storage_preferences(_FakeSettings())
+
+    assert mode == "local"
+    assert url == ""
+
+
+def test_resolve_initial_storage_preferences_env_mode_overrides_saved_local(monkeypatch):
+    class _FakeSettings:
+        def contains(self, key):
+            return key in {"storage/database_mode", "storage/database_url"}
+
+        def value(self, key, default=None):
+            if key == "storage/database_mode":
+                return "local"
+            if key == "storage/database_url":
+                return ""
+            return default
+
+    monkeypatch.setenv("SOPOTEK_DATABASE_MODE", "remote")
+    monkeypatch.setenv(
+        "SOPOTEK_DATABASE_URL",
+        "mysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?chartset=utf8mb4",
+    )
+
+    mode, url = AppController._resolve_initial_storage_preferences(_FakeSettings())
+
+    assert mode == "remote"
+    assert url == (
+        "mysql+pymysql://sopotek:sopotek_local@mysql:3306/"
+        "sopotek_trading?charset=utf8mb4"
+    )
+
+
+def test_setup_data_requires_remote_storage_when_env_forces_remote(monkeypatch):
+    controller = AppController.__new__(AppController)
+    captured = {}
+
+    controller.database_mode = "remote"
+    controller.database_url = "mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4"
+    controller.configure_storage_database = lambda **kwargs: captured.update(kwargs)
+    controller._restore_performance_state = lambda: None
+
+    monkeypatch.setenv("SOPOTEK_DATABASE_MODE", "remote")
+    monkeypatch.setenv("SOPOTEK_DATABASE_URL", controller.database_url)
+
+    AppController._setup_data(controller)
+
+    assert captured["database_mode"] == "remote"
+    assert captured["database_url"] == controller.database_url
+    assert captured["persist"] is False
+    assert captured["raise_on_error"] is True
+
+
+def test_build_broker_for_login_routes_crypto_paper_sessions_to_paper_broker():
+    controller = AppController.__new__(AppController)
+    controller.logger = logging.getLogger("test.app_controller.paper_routing")
+    controller.initial_capital = 25000.0
+    controller.paper_data_exchange = None
+    controller.paper_data_exchanges = []
+    config = SimpleNamespace(
+        broker=SimpleNamespace(
+            type="crypto",
+            exchange="binanceus",
+            mode="paper",
+            params={},
+            options={},
+        )
+    )
+    controller.config = config
+
+    broker = controller._build_broker_for_login(config)
+
+    assert isinstance(broker, PaperBroker)
+    assert config.broker.params["paper_data_exchange"] == "binanceus"
+    assert config.broker.params["paper_data_exchanges"][0] == "binanceus"
+    assert controller.paper_data_exchange == "binanceus"
+
+
+def test_friendly_initialization_error_explains_binanceus_testnet_restriction():
+    controller = AppController.__new__(AppController)
+    message = controller._friendly_initialization_error(
+        "binanceus GET https://testnet.binance.vision/api/v3/time 451 restricted location"
+    )
+
+    assert "PaperBroker" not in message
+    assert "PAPER mode" in message
+    assert "LIVE mode" in message
+    assert "Binance US sandbox routing" in message
+
+
+def test_friendly_startup_error_explains_local_mysql_volume_credential_drift():
+    controller = AppController.__new__(AppController)
+    controller.database_url = "mysql+pymysql://sopotek:sopotek_local@mysql:3306/sopotek_trading?charset=utf8mb4"
+
+    message = controller._friendly_startup_error(
+        "sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) "
+        "(1045, \"Access denied for user 'sopotek'@'172.18.0.3' (using password: YES)\")"
+    )
+
+    assert "server rejected the username or password" in message
+    assert "mysql_data" in message
+    assert "docker compose down -v" in message
+    assert "mysql+pymysql://sopotek:***@mysql:3306/sopotek_trading?charset=utf8mb4" in message

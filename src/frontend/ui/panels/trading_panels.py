@@ -123,7 +123,7 @@ def create_positions_panel(terminal):
 
     terminal.positions_orders_tabs = tabs
     dock.setWidget(tabs)
-    terminal.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    terminal.addDockWidget(Qt.RightDockWidgetArea, dock)
     return dock
 
 

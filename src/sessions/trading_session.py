@@ -1,0 +1,1141 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import logging
+from typing import Any
+
+from core.sopotek_trading import SopotekTrading
+from event_bus.event_types import EventType
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _normalized_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_fraction(value: Any, default: float) -> float:
+    normalized = _safe_float(value, default)
+    if normalized < 0:
+        return 0.0
+    if normalized > 1.0:
+        normalized = normalized / 100.0
+    return normalized
+
+
+def _normalize_exposure_limit(value: Any, default: float) -> float:
+    normalized = _safe_float(value, default)
+    if normalized < 0:
+        return 0.0
+    if normalized > 5.0:
+        normalized = normalized / 100.0
+    return normalized
+
+
+@dataclass(frozen=True)
+class SessionRiskLimits:
+    max_drawdown_pct: float
+    max_position_size_pct: float
+    max_gross_exposure_pct: float
+    max_leverage: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "max_position_size_pct": self.max_position_size_pct,
+            "max_gross_exposure_pct": self.max_gross_exposure_pct,
+            "max_leverage": self.max_leverage,
+        }
+
+
+@dataclass
+class SessionRiskState:
+    blocked: bool = False
+    reason: str = ""
+    equity: float = 0.0
+    peak_equity: float = 0.0
+    drawdown_pct: float = 0.0
+    gross_exposure: float = 0.0
+    gross_exposure_pct: float = 0.0
+    largest_position_notional: float = 0.0
+    largest_position_pct: float = 0.0
+    max_observed_leverage: float = 0.0
+    position_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "blocked": self.blocked,
+            "reason": self.reason,
+            "equity": self.equity,
+            "peak_equity": self.peak_equity,
+            "drawdown_pct": self.drawdown_pct,
+            "gross_exposure": self.gross_exposure,
+            "gross_exposure_pct": self.gross_exposure_pct,
+            "largest_position_notional": self.largest_position_notional,
+            "largest_position_pct": self.largest_position_pct,
+            "max_observed_leverage": self.max_observed_leverage,
+            "position_count": self.position_count,
+        }
+
+
+@dataclass
+class SessionSnapshot:
+    session_id: str
+    label: str
+    exchange: str
+    broker_type: str
+    mode: str
+    strategy: str
+    status: str
+    connected: bool
+    autotrading: bool
+    account_label: str | None = None
+    equity: float = 0.0
+    balance_summary: str = ""
+    positions_count: int = 0
+    open_orders_count: int = 0
+    trade_count: int = 0
+    symbols_count: int = 0
+    last_error: str = ""
+    last_update_at: str = ""
+    started_at: str = ""
+    risk_blocked: bool = False
+    drawdown_pct: float = 0.0
+    gross_exposure: float = 0.0
+    gross_exposure_pct: float = 0.0
+    max_observed_leverage: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "label": self.label,
+            "exchange": self.exchange,
+            "broker_type": self.broker_type,
+            "mode": self.mode,
+            "strategy": self.strategy,
+            "status": self.status,
+            "connected": self.connected,
+            "autotrading": self.autotrading,
+            "account_label": self.account_label,
+            "equity": self.equity,
+            "balance_summary": self.balance_summary,
+            "positions_count": self.positions_count,
+            "open_orders_count": self.open_orders_count,
+            "trade_count": self.trade_count,
+            "symbols_count": self.symbols_count,
+            "last_error": self.last_error,
+            "last_update_at": self.last_update_at,
+            "started_at": self.started_at,
+            "risk_blocked": self.risk_blocked,
+            "drawdown_pct": self.drawdown_pct,
+            "gross_exposure": self.gross_exposure,
+            "gross_exposure_pct": self.gross_exposure_pct,
+            "max_observed_leverage": self.max_observed_leverage,
+            "metadata": dict(self.metadata or {}),
+        }
+
+
+class SessionControllerProxy:
+    """Session-scoped facade used by the legacy trading runtime."""
+
+    _COPIED_ATTRS = (
+        "logger",
+        "order_type",
+        "time_frame",
+        "limit",
+        "strategy_name",
+        "strategy_params",
+        "multi_strategy_enabled",
+        "symbol_strategy_assignments",
+        "symbol_strategy_rankings",
+        "symbol_strategy_locks",
+        "max_signal_agents",
+        "minimum_signal_votes",
+        "reasoning_enabled",
+        "reasoning_mode",
+        "reasoning_min_confidence",
+        "reasoning_timeout_seconds",
+        "reasoning_provider",
+        "openai_api_key",
+        "openai_model",
+        "max_portfolio_risk",
+        "max_risk_per_trade",
+        "max_position_size_pct",
+        "max_gross_exposure_pct",
+        "hedging_enabled",
+        "margin_closeout_guard_enabled",
+        "max_margin_closeout_pct",
+        "runtime_history_limit",
+        "market_trade_preference",
+        "forex_candle_price_component",
+        "risk_profile_name",
+        "market_data_repository",
+        "trade_repository",
+        "trade_audit_repository",
+        "equity_repository",
+        "agent_decision_repository",
+    )
+
+    def __init__(self, parent_controller: Any, session: "TradingSession") -> None:
+        self._parent = parent_controller
+        self._session = session
+        for attr in self._COPIED_ATTRS:
+            if hasattr(parent_controller, attr):
+                setattr(self, attr, getattr(parent_controller, attr))
+        self.logger = session.logger
+        self.config = session.config
+        self.exchange = session.exchange
+        self.broker_type = session.broker_type
+        self.broker = session.broker
+        self.symbols = list(session.symbols)
+        self.balances = dict(session.balances)
+        self.balance = dict(session.balances)
+        self.session_id = session.session_id
+        self.session_label = session.label
+        self.trading_system = None
+        self.portfolio = None
+        self.behavior_guard = None
+        self.event_bus = None
+        self.agent_event_runtime = None
+        self.agent_memory = None
+        self.signal_agents = []
+        self.signal_consensus_agent = None
+        self.signal_aggregation_agent = None
+        self.reasoning_engine = None
+        self.paper_trade_learning_repository = None
+        self.paper_trade_dataset_builder = None
+        self.paper_trade_learning_service = None
+        self.quant_allocation_snapshot = {}
+        self.quant_risk_snapshot = {}
+        self.agent_portfolio_snapshot = {}
+        self.historical_data = getattr(parent_controller, "historical_data", None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._parent, name)
+
+    def _active_exchange_code(self, exchange: str | None = None) -> str | None:
+        normalized = str(exchange or self.exchange or "").strip().lower()
+        return normalized or None
+
+    def current_account_label(self) -> str:
+        broker = getattr(self, "broker", None)
+        broker_config = getattr(getattr(self, "config", None), "broker", None)
+        account_id = getattr(broker, "account_id", None) or getattr(broker_config, "account_id", None) or ""
+        text = str(account_id or "").strip()
+        if not text:
+            return "Not set"
+        if len(text) <= 8:
+            return text
+        return f"{text[:4]}...{text[-4:]}"
+
+    def is_live_mode(self) -> bool:
+        broker_config = getattr(getattr(self, "config", None), "broker", None)
+        mode = str(getattr(broker_config, "mode", "paper") or "paper").strip().lower()
+        exchange = str(getattr(broker_config, "exchange", "") or "").strip().lower()
+        return mode == "live" and exchange != "paper"
+
+    def get_active_autotrade_symbols(self) -> list[str]:
+        resolver = getattr(self._parent, "get_active_autotrade_symbols", None)
+        if callable(resolver):
+            try:
+                return list(
+                    resolver(
+                        available_symbols=self._session.symbols,
+                        catalog_symbols=getattr(self._session, "symbol_catalog", []),
+                        broker_type=self.broker_type,
+                        exchange=self.exchange,
+                    )
+                    or []
+                )
+            except TypeError:
+                return list(resolver() or [])
+        return list(self._session.symbols)
+
+    def is_symbol_enabled_for_autotrade(self, symbol: str) -> bool:
+        resolver = getattr(self._parent, "is_symbol_enabled_for_autotrade", None)
+        if callable(resolver):
+            try:
+                return bool(
+                    resolver(
+                        symbol,
+                        available_symbols=self._session.symbols,
+                        catalog_symbols=getattr(self._session, "symbol_catalog", []),
+                        broker_type=self.broker_type,
+                        exchange=self.exchange,
+                    )
+                )
+            except TypeError:
+                return bool(resolver(symbol))
+        return str(symbol or "").strip().upper() in set(self._session.symbols)
+
+    def publish_ai_signal(self, symbol: str, signal: dict[str, Any], candles: list[Any] | None = None) -> None:
+        payload = dict(signal or {})
+        payload["session_id"] = self.session_id
+        payload["session_label"] = self.session_label
+        self._session.last_ai_signal = dict(payload)
+        if hasattr(self._parent, "publish_ai_signal"):
+            self._parent.publish_ai_signal(symbol, payload, candles=candles)
+
+    def publish_strategy_debug(
+        self,
+        symbol: str,
+        signal: dict[str, Any],
+        candles: list[Any] | None = None,
+        features: Any = None,
+    ) -> None:
+        payload = dict(signal or {})
+        payload["session_id"] = self.session_id
+        payload["session_label"] = self.session_label
+        self._session.last_strategy_debug = dict(payload)
+        if hasattr(self._parent, "publish_strategy_debug"):
+            self._parent.publish_strategy_debug(symbol, payload, candles=candles, features=features)
+
+    async def apply_news_bias_to_signal(self, symbol: str, signal: dict[str, Any]) -> dict[str, Any] | None:
+        return signal
+
+    def handle_trade_execution(self, trade: dict[str, Any]) -> None:
+        payload = dict(trade or {})
+        payload.setdefault("exchange", self.exchange)
+        payload["session_id"] = self.session_id
+        payload["session_label"] = self.session_label
+        self._session.trade_history.append(payload)
+        self._session.trade_history = self._session.trade_history[-500:]
+        if hasattr(self._parent, "handle_trade_execution"):
+            self._parent.handle_trade_execution(payload)
+
+    def trade_quantity_context(self, symbol: str) -> dict[str, Any]:
+        normalized_symbol = str(symbol or "").strip().upper()
+        broker = getattr(self, "broker", None)
+        exchange_name = str(getattr(broker, "exchange_name", "") or "").strip().lower()
+        compact = normalized_symbol.replace("_", "/").replace("-", "/")
+        parts = compact.split("/", 1) if "/" in compact else []
+        supports_lots = False
+        forex_quotes = set(getattr(self._parent, "FOREX_SYMBOL_QUOTES", set()) or set())
+        if exchange_name == "oanda" and len(parts) == 2:
+            base, quote = parts
+            supports_lots = (
+                len(base) == 3
+                and len(quote) == 3
+                and base.isalpha()
+                and quote.isalpha()
+                and base in forex_quotes
+                and quote in forex_quotes
+            )
+        lot_units = float(getattr(self._parent, "FOREX_STANDARD_LOT_UNITS", 100000.0) or 100000.0)
+        return {
+            "symbol": normalized_symbol,
+            "supports_lots": supports_lots,
+            "default_mode": "lots" if supports_lots else "units",
+            "lot_units": lot_units,
+        }
+
+    async def _preflight_trade_submission(self, **kwargs: Any) -> dict[str, Any] | None:
+        active_session_id = getattr(self._parent, "active_session_id", None)
+        if active_session_id != self.session_id:
+            return None
+        preflight = getattr(self._parent, "_preflight_trade_submission", None)
+        if not callable(preflight):
+            return None
+        return await preflight(**kwargs)
+
+
+class TradingSession:
+    """One isolated broker connection and trading runtime."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        config: Any,
+        parent_controller: Any,
+        logger: logging.Logger | None = None,
+        snapshot_interval_seconds: float = 10.0,
+        on_state_change: Any = None,
+    ) -> None:
+        self.session_id = str(session_id or "").strip()
+        if not self.session_id:
+            raise ValueError("session_id is required")
+        self.config = config
+        self.parent_controller = parent_controller
+        self.logger = (logger or logging.getLogger("TradingSession")).getChild(self.session_id)
+        self.snapshot_interval_seconds = max(2.0, float(snapshot_interval_seconds or 10.0))
+        self.on_state_change = on_state_change
+
+        broker_config = getattr(config, "broker", None)
+        self.exchange = str(getattr(broker_config, "exchange", "broker") or "broker").strip().lower() or "broker"
+        self.mode = str(getattr(broker_config, "mode", "paper") or "paper").strip().lower() or "paper"
+        self.broker_type = str(getattr(broker_config, "type", "paper") or "paper").strip().lower() or "paper"
+        self.strategy_name = str(getattr(config, "strategy", "Trend Following") or "Trend Following").strip() or "Trend Following"
+        self.label = f"{self.exchange.upper()} {self.mode.upper()} {self.session_id.split('-')[-1].upper()}"
+
+        self.status = "created"
+        self.connected = False
+        self.autotrading = False
+        self.started_at = _utc_now()
+        self.last_update_at = self.started_at
+        self.last_error = ""
+
+        self.broker = None
+        self.trading_system = None
+        self.session_controller = None
+        self.event_bus = None
+        self.portfolio = None
+
+        self.symbols: list[str] = []
+        self.symbol_catalog: list[str] = []
+        self.balances: dict[str, Any] = {}
+        self.positions: list[dict[str, Any]] = []
+        self.open_orders: list[dict[str, Any]] = []
+        self.trade_history: list[dict[str, Any]] = []
+        self.latest_tickers: dict[str, dict[str, Any]] = {}
+        self.last_ai_signal: dict[str, Any] = {}
+        self.last_strategy_debug: dict[str, Any] = {}
+        self.risk_limits = self._resolve_risk_limits(config)
+        self.risk_state = SessionRiskState()
+
+        self._lock = asyncio.Lock()
+        self._snapshot_task: asyncio.Task[Any] | None = None
+        self._runtime_task: asyncio.Task[Any] | None = None
+        self._peak_equity = 0.0
+
+    def _account_identity_candidates(self, payload: Any) -> list[Mapping[str, Any]]:
+        queue = [payload]
+        candidates: list[Mapping[str, Any]] = []
+        seen: set[int] = set()
+        while queue:
+            current = queue.pop(0)
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            if isinstance(current, Mapping):
+                candidates.append(current)
+                for key in ("raw", "account", "selected_account", "primary_account"):
+                    nested = current.get(key)
+                    if isinstance(nested, Mapping):
+                        queue.append(nested)
+                for key in ("accounts", "items", "results", "data"):
+                    nested = current.get(key)
+                    if isinstance(nested, (list, tuple)):
+                        queue.extend(nested)
+            elif isinstance(current, (list, tuple)):
+                queue.extend(current)
+        return candidates
+
+    def _account_identity_from_payload(
+        self,
+        payload: Any,
+        *,
+        allow_generic_identifiers: bool = False,
+    ) -> tuple[str | None, str | None]:
+        for candidate in self._account_identity_candidates(payload):
+            account_id_values = [
+                candidate.get("account_id"),
+                candidate.get("accountId"),
+                candidate.get("account"),
+                candidate.get("acctId"),
+                candidate.get("accountNumber"),
+            ]
+            if allow_generic_identifiers:
+                account_id_values.extend([candidate.get("id"), candidate.get("name")])
+            account_id = _normalized_text(*account_id_values)
+            account_hash = _normalized_text(
+                candidate.get("account_hash"),
+                candidate.get("accountHash"),
+                candidate.get("hash"),
+            )
+            if account_id or account_hash:
+                return account_id or None, account_hash or None
+        return None, None
+
+    def _apply_account_identity(self, *, account_id: str | None = None, account_hash: str | None = None) -> None:
+        broker = self.broker
+        broker_config = getattr(self.config, "broker", None)
+
+        resolved_account_id = _normalized_text(account_id)
+        resolved_account_hash = _normalized_text(account_hash)
+
+        if resolved_account_id and broker is not None and hasattr(broker, "account_id"):
+            broker.account_id = resolved_account_id
+        if resolved_account_hash and broker is not None and hasattr(broker, "account_hash"):
+            broker.account_hash = resolved_account_hash
+
+        broker_state = getattr(broker, "session_state", None) if broker is not None else None
+        if broker_state is not None:
+            if resolved_account_id and hasattr(broker_state, "account_id"):
+                broker_state.account_id = resolved_account_id
+            if resolved_account_hash and hasattr(broker_state, "account_hash"):
+                broker_state.account_hash = resolved_account_hash
+
+        if broker_config is None:
+            return
+
+        if resolved_account_id:
+            broker_config.account_id = resolved_account_id
+
+        config_options = dict(getattr(broker_config, "options", None) or {})
+        config_params = dict(getattr(broker_config, "params", None) or {})
+        broker_options = dict(getattr(broker, "options", None) or {}) if broker is not None else {}
+        broker_params = dict(getattr(broker, "params", None) or {}) if broker is not None else {}
+
+        if resolved_account_id:
+            config_options["account_id"] = resolved_account_id
+            config_params["account_id"] = resolved_account_id
+            broker_options["account_id"] = resolved_account_id
+            broker_params["account_id"] = resolved_account_id
+        if resolved_account_hash:
+            config_options["account_hash"] = resolved_account_hash
+            config_params["account_hash"] = resolved_account_hash
+            broker_options["account_hash"] = resolved_account_hash
+            broker_params["account_hash"] = resolved_account_hash
+
+        broker_config.options = config_options
+        broker_config.params = config_params
+        if broker is not None and hasattr(broker, "options"):
+            broker.options = broker_options
+        if broker is not None and hasattr(broker, "params"):
+            broker.params = broker_params
+
+    async def _synchronize_account_identity(self, payload: Any = None) -> None:
+        broker = self.broker
+        broker_config = getattr(self.config, "broker", None)
+        if broker is None and broker_config is None:
+            return
+
+        broker_options = dict(getattr(broker, "options", None) or {}) if broker is not None else {}
+        broker_params = dict(getattr(broker, "params", None) or {}) if broker is not None else {}
+        config_options = dict(getattr(broker_config, "options", None) or {}) if broker_config is not None else {}
+        config_params = dict(getattr(broker_config, "params", None) or {}) if broker_config is not None else {}
+
+        account_id, account_hash = self._account_identity_from_payload(payload)
+        account_id = _normalized_text(
+            account_id,
+            getattr(broker, "account_id", None) if broker is not None else None,
+            getattr(broker_config, "account_id", None) if broker_config is not None else None,
+            broker_options.get("account_id"),
+            broker_params.get("account_id"),
+            config_options.get("account_id"),
+            config_params.get("account_id"),
+        ) or None
+        account_hash = _normalized_text(
+            account_hash,
+            getattr(broker, "account_hash", None) if broker is not None else None,
+            broker_options.get("account_hash"),
+            broker_params.get("account_hash"),
+            config_options.get("account_hash"),
+            config_params.get("account_hash"),
+        ) or None
+
+        if (not account_id or not account_hash) and broker is not None:
+            get_accounts = getattr(broker, "get_accounts", None)
+            if callable(get_accounts):
+                try:
+                    discovered = await get_accounts()
+                except Exception:
+                    self.logger.debug(
+                        "Account discovery failed for session %s",
+                        self.session_id,
+                        exc_info=True,
+                    )
+                else:
+                    discovered_account_id, discovered_account_hash = self._account_identity_from_payload(
+                        discovered,
+                        allow_generic_identifiers=True,
+                    )
+                    account_id = _normalized_text(discovered_account_id, account_id) or None
+                    account_hash = _normalized_text(discovered_account_hash, account_hash) or None
+
+        self._apply_account_identity(account_id=account_id, account_hash=account_hash)
+
+    async def initialize(self) -> "TradingSession":
+        async with self._lock:
+            if self.connected and self.broker is not None and self.trading_system is not None:
+                return self
+            self.status = "connecting"
+            self.last_error = ""
+            self._notify_state_change()
+
+            self.broker = self.parent_controller._build_broker_for_login(self.config)
+            if self.broker is None:
+                raise RuntimeError("Broker creation failed")
+            if hasattr(self.broker, "controller"):
+                self.broker.controller = self.parent_controller
+            if hasattr(self.broker, "logger"):
+                self.broker.logger = self.logger
+
+            await self.broker.connect()
+            await self._synchronize_account_identity()
+            self.connected = True
+            self.balances = await self._fetch_balances_safe()
+            await self._synchronize_account_identity(self.balances)
+            self.symbols = await self._fetch_symbols_safe()
+
+            self.session_controller = SessionControllerProxy(self.parent_controller, self)
+            self.trading_system = SopotekTrading(self.session_controller)
+            self.event_bus = getattr(self.trading_system, "event_bus", None)
+            self.portfolio = getattr(getattr(self.trading_system, "portfolio", None), "portfolio", None)
+            self.session_controller.trading_system = self.trading_system
+            self.session_controller.portfolio = self.portfolio
+            self.session_controller.event_bus = self.event_bus
+            if hasattr(self.broker, "controller"):
+                self.broker.controller = self.session_controller
+            if self.event_bus is not None and hasattr(self.event_bus, "subscribe"):
+                self.event_bus.subscribe("*", self._capture_event)
+            self.positions = await self._fetch_positions_safe()
+            await self._synchronize_account_identity(self.positions)
+            self.open_orders = await self._fetch_open_orders_safe()
+            self._update_risk_state()
+
+            self.status = "risk_blocked" if self.risk_state.blocked else "ready"
+            self.last_update_at = _utc_now()
+            self._ensure_snapshot_task()
+            self._notify_state_change()
+            return self
+
+    async def start_trading(self) -> "TradingSession":
+        await self.initialize()
+        await self.refresh_state()
+        async with self._lock:
+            if self.trading_system is None:
+                raise RuntimeError("Trading system is not initialized")
+            if self.autotrading:
+                return self
+            if self.risk_state.blocked:
+                self.status = "risk_blocked"
+                self.last_error = self.risk_state.reason
+                self.last_update_at = _utc_now()
+                self._notify_state_change()
+                raise RuntimeError(self.risk_state.reason or "Session risk controls blocked trading.")
+            runtime_task = asyncio.create_task(self._run_trading_runtime(), name=f"session_runtime:{self.session_id}")
+            runtime_task.add_done_callback(self._on_runtime_task_done)
+            self._runtime_task = runtime_task
+        await asyncio.sleep(0)
+        runtime_task = self._runtime_task
+        if runtime_task is not None and runtime_task.done():
+            exception = runtime_task.exception()
+            if exception is not None:
+                raise exception
+        async with self._lock:
+            self.autotrading = True
+            self.status = "running"
+            self.last_update_at = _utc_now()
+            self._notify_state_change()
+            return self
+
+    async def stop_trading(self, *, reason: str | None = None, risk_blocked: bool = False) -> "TradingSession":
+        runtime_task = None
+        async with self._lock:
+            runtime_task = self._runtime_task
+            self._runtime_task = None
+            if self.trading_system is not None and (self.autotrading or runtime_task is not None):
+                try:
+                    await self.trading_system.stop(wait_for_background_workers=True)
+                except TypeError:
+                    await self.trading_system.stop()
+        if runtime_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await runtime_task
+        async with self._lock:
+            self.autotrading = False
+            if risk_blocked:
+                self.status = "risk_blocked"
+                self.last_error = str(reason or self.risk_state.reason or "").strip()
+            else:
+                self.status = "ready" if self.connected else "stopped"
+            self.last_update_at = _utc_now()
+            self._notify_state_change()
+            return self
+
+    async def close(self) -> None:
+        snapshot_task = None
+        runtime_task = None
+        trading_system = None
+        broker = None
+        event_bus = None
+        async with self._lock:
+            self.status = "stopping"
+            self._notify_state_change()
+            snapshot_task = self._snapshot_task
+            self._snapshot_task = None
+            runtime_task = self._runtime_task
+            self._runtime_task = None
+            trading_system = self.trading_system
+            broker = self.broker
+            event_bus = self.event_bus
+        if snapshot_task is not None and not snapshot_task.done():
+            snapshot_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await snapshot_task
+        if event_bus is not None and hasattr(event_bus, "unsubscribe"):
+            event_bus.unsubscribe("*", self._capture_event)
+        if trading_system is not None:
+            try:
+                await trading_system.stop(wait_for_background_workers=True)
+            except TypeError:
+                await trading_system.stop()
+        if runtime_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await runtime_task
+        if broker is not None and hasattr(broker, "close"):
+            await broker.close()
+        async with self._lock:
+            self.trading_system = None
+            self.broker = None
+            self.event_bus = None
+            self.connected = False
+            self.autotrading = False
+            self.status = "closed"
+            self.last_update_at = _utc_now()
+            self._notify_state_change()
+
+    async def refresh_state(self) -> None:
+        if self.broker is None:
+            return
+        balances = await self._fetch_balances_safe()
+        if balances:
+            self.balances = balances
+            await self._synchronize_account_identity(balances)
+            if self.session_controller is not None:
+                self.session_controller.balances = dict(balances)
+                self.session_controller.balance = dict(balances)
+        self.positions = await self._fetch_positions_safe()
+        await self._synchronize_account_identity(self.positions)
+        self.open_orders = await self._fetch_open_orders_safe()
+        self._update_risk_state()
+        if self.risk_state.blocked:
+            await self.stop_trading(reason=self.risk_state.reason, risk_blocked=True)
+        elif self.status == "risk_blocked" and not self.autotrading:
+            self.status = "ready"
+            self.last_error = ""
+        self.last_update_at = _utc_now()
+        self._notify_state_change()
+
+    async def route_price(self, symbol: str, side: str) -> dict[str, Any] | None:
+        ticker = await self._fetch_ticker_safe(symbol)
+        if not isinstance(ticker, dict):
+            return None
+        keys = ("ask", "price", "last", "close") if str(side or "").strip().lower() == "buy" else ("bid", "price", "last", "close")
+        for key in keys:
+            price = _safe_float(ticker.get(key), 0.0)
+            if price > 0:
+                return {
+                    "session_id": self.session_id,
+                    "exchange": self.exchange,
+                    "symbol": str(symbol or "").strip().upper(),
+                    "side": str(side or "").strip().lower(),
+                    "price": price,
+                    "source": key,
+                    "session_label": self.label,
+                }
+        return None
+
+    def snapshot(self) -> SessionSnapshot:
+        account_label = self.session_controller.current_account_label() if self.session_controller is not None else "Not set"
+        return SessionSnapshot(
+            session_id=self.session_id,
+            label=self.label,
+            exchange=self.exchange,
+            broker_type=self.broker_type,
+            mode=self.mode,
+            strategy=self.strategy_name,
+            status=self.status,
+            connected=self.connected,
+            autotrading=self.autotrading,
+            account_label=account_label,
+            equity=self._extract_equity_value(),
+            balance_summary=self._balance_summary_text(),
+            positions_count=len(self.positions),
+            open_orders_count=len(self.open_orders),
+            trade_count=len(self.trade_history),
+            symbols_count=len(self.symbols),
+            last_error=self.last_error,
+            last_update_at=self.last_update_at.isoformat(),
+            started_at=self.started_at.isoformat(),
+            risk_blocked=self.risk_state.blocked,
+            drawdown_pct=self.risk_state.drawdown_pct,
+            gross_exposure=self.risk_state.gross_exposure,
+            gross_exposure_pct=self.risk_state.gross_exposure_pct,
+            max_observed_leverage=self.risk_state.max_observed_leverage,
+            metadata={
+                "last_ai_signal": dict(self.last_ai_signal or {}),
+                "last_strategy_debug": dict(self.last_strategy_debug or {}),
+                "risk_limits": self.risk_limits.to_dict(),
+                "risk_state": self.risk_state.to_dict(),
+            },
+        )
+
+    async def publish_event(self, event_type: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        if self.event_bus is None or not hasattr(self.event_bus, "publish"):
+            raise RuntimeError("Session event bus is not available.")
+        metadata = dict(kwargs.pop("metadata", {}) or {})
+        metadata.setdefault("session_id", self.session_id)
+        metadata.setdefault("session_label", self.label)
+        body = dict(payload or {})
+        body.setdefault("session_id", self.session_id)
+        body.setdefault("session_label", self.label)
+        return await self.event_bus.publish(event_type, body, metadata=metadata, **kwargs)
+
+    def subscribe_event(self, event_type: str, handler: Any) -> Any:
+        if self.event_bus is None or not hasattr(self.event_bus, "subscribe"):
+            raise RuntimeError("Session event bus is not available.")
+        return self.event_bus.subscribe(event_type, handler)
+
+    def gross_exposure(self) -> float:
+        return self.risk_state.gross_exposure
+
+    def unrealized_pnl(self) -> float:
+        return self._positions_unrealized_pnl()
+
+    def _ensure_snapshot_task(self) -> None:
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        self._snapshot_task = asyncio.create_task(self._snapshot_loop(), name=f"session_snapshot:{self.session_id}")
+
+    async def _run_trading_runtime(self) -> None:
+        if self.trading_system is None:
+            raise RuntimeError("Trading system is not initialized")
+        await self.trading_system.start()
+
+    def _on_runtime_task_done(self, task: asyncio.Task[Any]) -> None:
+        if self._runtime_task is not task:
+            return
+        self._runtime_task = None
+        if self.status in {"closed", "stopping"}:
+            return
+        self.autotrading = False
+        exception = None
+        if not task.cancelled():
+            exception = task.exception()
+        if exception is not None:
+            self.last_error = str(exception)
+            self.status = "risk_blocked" if self.risk_state.blocked else ("error" if self.connected else "stopped")
+            self.logger.error("Session runtime failed", exc_info=(type(exception), exception, exception.__traceback__))
+        else:
+            self.status = "risk_blocked" if self.risk_state.blocked else ("ready" if self.connected else "stopped")
+        self.last_update_at = _utc_now()
+        self._notify_state_change()
+
+    async def _snapshot_loop(self) -> None:
+        try:
+            while self.connected:
+                await asyncio.sleep(self.snapshot_interval_seconds)
+                await self.refresh_state()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.logger.exception("Session snapshot loop failed")
+            self._notify_state_change()
+
+    async def _capture_event(self, event: Any) -> None:
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict):
+            metadata.setdefault("session_id", self.session_id)
+        payload = dict(getattr(event, "data", {}) or {}) if isinstance(getattr(event, "data", None), dict) else {}
+        if payload:
+            payload.setdefault("session_id", self.session_id)
+
+        event_type = str(getattr(event, "type", "") or "").strip()
+        if event_type in {EventType.ORDER_EVENT, EventType.ORDER_UPDATE, EventType.ORDER_FILLED, EventType.FILL, EventType.EXECUTION_REPORT}:
+            if payload:
+                self.trade_history.append(dict(payload))
+                self.trade_history = self.trade_history[-500:]
+        elif event_type in {EventType.POSITION_EVENT, EventType.POSITION_UPDATE} and isinstance(payload.get("positions"), list):
+            self.positions = [dict(item) for item in payload.get("positions", []) if isinstance(item, dict)]
+        elif event_type in {EventType.MARKET_DATA_EVENT, EventType.PRICE_UPDATE, EventType.MARKET_TICK}:
+            symbol = str(payload.get("symbol") or "").strip().upper()
+            if symbol:
+                self.latest_tickers[symbol] = dict(payload)
+                self.latest_tickers = dict(list(self.latest_tickers.items())[-250:])
+        elif event_type in {EventType.RISK_ALERT, EventType.RISK_REJECTED} and payload:
+            self.last_error = str(payload.get("reason") or payload.get("message") or self.last_error).strip()
+        self.last_update_at = _utc_now()
+        self._notify_state_change()
+
+    async def _fetch_balances_safe(self) -> dict[str, Any]:
+        if self.broker is None or not hasattr(self.broker, "fetch_balance"):
+            return dict(self.balances or {})
+        try:
+            balances = await self.broker.fetch_balance()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.logger.debug("Balance refresh failed for session %s: %s", self.session_id, exc)
+            return dict(self.balances or {})
+        return dict(balances or {}) if isinstance(balances, dict) else {"raw": balances}
+
+    async def _fetch_symbols_safe(self) -> list[str]:
+        symbols = None
+        if self.broker is None:
+            return list(self.symbols)
+        try:
+            if hasattr(self.broker, "fetch_symbol"):
+                symbols = await self.broker.fetch_symbol()
+            elif hasattr(self.broker, "fetch_symbols"):
+                symbols = await self.broker.fetch_symbols()
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.logger.debug("Symbol discovery failed for session %s: %s", self.session_id, exc)
+            return list(self.symbols)
+        if isinstance(symbols, dict):
+            instruments = symbols.get("instruments", [])
+            normalized = []
+            for item in instruments:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("displayName")
+                    if name:
+                        normalized.append(str(name).strip())
+            symbols = normalized
+        normalized = list(
+            dict.fromkeys(
+                str(symbol or "").strip().upper()
+                for symbol in list(symbols or [])
+                if str(symbol or "").strip()
+            )
+        )
+        if not normalized:
+            fallback_symbols = list(getattr(self.parent_controller, "symbols", []) or [])
+            normalized = list(
+                dict.fromkeys(
+                    str(symbol or "").strip().upper()
+                    for symbol in fallback_symbols
+                    if str(symbol or "").strip()
+                )
+            )
+        self.symbol_catalog = list(normalized)
+        limiter = getattr(self.parent_controller, "_limit_runtime_symbols", None)
+        if callable(limiter):
+            try:
+                return list(limiter(normalized, self.broker_type, self.exchange) or normalized)
+            except Exception:
+                return normalized
+        return normalized
+
+    async def _fetch_positions_safe(self) -> list[dict[str, Any]]:
+        if self.broker is None or not hasattr(self.broker, "fetch_positions"):
+            return list(self.positions)
+        try:
+            positions = await self.broker.fetch_positions()
+        except TypeError:
+            positions = await self.broker.fetch_positions(symbols=self.symbols[:10])
+        except Exception as exc:
+            self.logger.debug("Position refresh failed for session %s: %s", self.session_id, exc)
+            return list(self.positions)
+        return [dict(item) for item in list(positions or []) if isinstance(item, dict)]
+
+    async def _fetch_open_orders_safe(self) -> list[dict[str, Any]]:
+        if self.broker is None or not hasattr(self.broker, "fetch_open_orders"):
+            return list(self.open_orders)
+        try:
+            orders = await self.broker.fetch_open_orders(limit=100)
+        except TypeError:
+            try:
+                orders = await self.broker.fetch_open_orders()
+            except Exception as exc:
+                self.logger.debug("Open-order refresh failed for session %s: %s", self.session_id, exc)
+                return list(self.open_orders)
+        except Exception as exc:
+            self.logger.debug("Open-order refresh failed for session %s: %s", self.session_id, exc)
+            return list(self.open_orders)
+        return [dict(item) for item in list(orders or []) if isinstance(item, dict)]
+
+    async def _fetch_ticker_safe(self, symbol: str) -> dict[str, Any] | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if normalized_symbol in self.latest_tickers:
+            return dict(self.latest_tickers[normalized_symbol])
+        if self.broker is None or not hasattr(self.broker, "fetch_ticker"):
+            return None
+        try:
+            ticker = await self.broker.fetch_ticker(normalized_symbol)
+        except Exception as exc:
+            self.logger.debug("Ticker refresh failed for session %s %s: %s", self.session_id, normalized_symbol, exc)
+            return None
+        if isinstance(ticker, dict):
+            payload = dict(ticker)
+            payload.setdefault("symbol", normalized_symbol)
+            self.latest_tickers[normalized_symbol] = dict(payload)
+            return payload
+        return None
+
+    def _extract_equity_value(self) -> float:
+        balances = dict(self.balances or {})
+        for key in ("nav", "equity", "net_liquidation", "account_value", "balance", "cash"):
+            value = _safe_float(balances.get(key), 0.0)
+            if value > 0:
+                return value
+        total = balances.get("total")
+        if isinstance(total, dict):
+            for currency in ("USD", "USDT", "USDC", "BUSD", "EUR", "GBP"):
+                value = _safe_float(total.get(currency), 0.0)
+                if value > 0:
+                    return value
+            if len(total) == 1:
+                only_value = _safe_float(next(iter(total.values())), 0.0)
+                if only_value > 0:
+                    return only_value
+        free_bucket = balances.get("free")
+        if isinstance(free_bucket, dict):
+            for currency in ("USD", "USDT", "USDC", "BUSD", "EUR", "GBP"):
+                value = _safe_float(free_bucket.get(currency), 0.0)
+                if value > 0:
+                    return value
+        return 0.0
+
+    def _balance_summary_text(self) -> str:
+        total = dict(self.balances or {}).get("total")
+        if isinstance(total, dict):
+            parts = []
+            for currency in ("USD", "USDT", "USDC", "EUR", "GBP", "BTC"):
+                value = _safe_float(total.get(currency), 0.0)
+                if value > 0:
+                    parts.append(f"{currency} {value:,.2f}")
+                if len(parts) >= 2:
+                    break
+            if parts:
+                return " | ".join(parts)
+        equity = self._extract_equity_value()
+        return f"Equity {equity:,.2f}" if equity > 0 else "Balance unavailable"
+
+    def _resolve_risk_limits(self, config: Any) -> SessionRiskLimits:
+        risk_config = getattr(config, "risk", None)
+        broker_options = dict(getattr(getattr(config, "broker", None), "options", None) or {})
+        return SessionRiskLimits(
+            max_drawdown_pct=_normalize_fraction(
+                broker_options.get(
+                    "max_drawdown_pct",
+                    getattr(risk_config, "max_daily_drawdown", getattr(risk_config, "max_drawdown", 0.10)),
+                ),
+                0.10,
+            ),
+            max_position_size_pct=_normalize_fraction(
+                broker_options.get(
+                    "max_position_size_pct",
+                    getattr(risk_config, "max_position_size_pct", 0.10),
+                ),
+                0.10,
+            ),
+            max_gross_exposure_pct=_normalize_exposure_limit(
+                broker_options.get(
+                    "max_gross_exposure_pct",
+                    getattr(risk_config, "max_gross_exposure_pct", 2.0),
+                ),
+                2.0,
+            ),
+            max_leverage=(
+                _safe_float(broker_options.get("max_leverage", getattr(risk_config, "max_leverage", None)), 0.0) or None
+            ),
+        )
+
+    def _position_notional(self, position: dict[str, Any]) -> float:
+        for key in ("notional", "notional_value", "position_value", "market_value", "exposure", "value", "cost"):
+            value = _safe_float(position.get(key), 0.0)
+            if value > 0:
+                return abs(value)
+        quantity = 0.0
+        for key in ("contracts", "contract_size", "size", "qty", "quantity", "amount", "units"):
+            quantity = _safe_float(position.get(key), 0.0)
+            if quantity > 0:
+                break
+        price = 0.0
+        for key in ("markPrice", "mark_price", "price", "entryPrice", "entry_price", "avgPrice", "average"):
+            price = _safe_float(position.get(key), 0.0)
+            if price > 0:
+                break
+        return abs(quantity * price)
+
+    def _position_leverage(self, position: dict[str, Any]) -> float:
+        for key in ("leverage", "effective_leverage"):
+            value = _safe_float(position.get(key), 0.0)
+            if value > 0:
+                return value
+        return 0.0
+
+    def _position_unrealized_pnl(self, position: dict[str, Any]) -> float:
+        for key in ("unrealizedPnl", "unrealized_pnl", "floatingProfit", "floating_profit", "pnl", "profit"):
+            if key not in position:
+                continue
+            return _safe_float(position.get(key), 0.0)
+        return 0.0
+
+    def _positions_unrealized_pnl(self) -> float:
+        return round(sum(self._position_unrealized_pnl(position) for position in self.positions), 6)
+
+    def _update_risk_state(self) -> None:
+        equity = max(self._extract_equity_value(), 0.0)
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+        peak_equity = max(self._peak_equity, equity)
+        drawdown_pct = ((peak_equity - equity) / peak_equity) if peak_equity > 0 else 0.0
+
+        gross_exposure = 0.0
+        largest_position_notional = 0.0
+        max_observed_leverage = 0.0
+        for position in self.positions:
+            if not isinstance(position, dict):
+                continue
+            notional = self._position_notional(position)
+            leverage = self._position_leverage(position)
+            gross_exposure += abs(notional)
+            largest_position_notional = max(largest_position_notional, abs(notional))
+            max_observed_leverage = max(max_observed_leverage, leverage)
+
+        gross_exposure_pct = (gross_exposure / equity) if equity > 0 else 0.0
+        largest_position_pct = (largest_position_notional / equity) if equity > 0 else 0.0
+
+        reasons = []
+        if drawdown_pct > self.risk_limits.max_drawdown_pct + 1e-12:
+            reasons.append(
+                f"Drawdown {drawdown_pct:.2%} exceeded session limit {self.risk_limits.max_drawdown_pct:.2%}."
+            )
+        if largest_position_pct > self.risk_limits.max_position_size_pct + 1e-12:
+            reasons.append(
+                f"Largest position {largest_position_pct:.2%} exceeded session position cap {self.risk_limits.max_position_size_pct:.2%}."
+            )
+        if gross_exposure_pct > self.risk_limits.max_gross_exposure_pct + 1e-12:
+            reasons.append(
+                f"Gross exposure {gross_exposure_pct:.2f}x exceeded session exposure cap {self.risk_limits.max_gross_exposure_pct:.2f}x."
+            )
+        if self.risk_limits.max_leverage is not None and max_observed_leverage > self.risk_limits.max_leverage + 1e-12:
+            reasons.append(
+                f"Observed leverage {max_observed_leverage:.2f}x exceeded session leverage cap {self.risk_limits.max_leverage:.2f}x."
+            )
+
+        self.risk_state = SessionRiskState(
+            blocked=bool(reasons),
+            reason=" ".join(reasons).strip(),
+            equity=equity,
+            peak_equity=peak_equity,
+            drawdown_pct=drawdown_pct,
+            gross_exposure=round(gross_exposure, 6),
+            gross_exposure_pct=round(gross_exposure_pct, 6),
+            largest_position_notional=round(largest_position_notional, 6),
+            largest_position_pct=round(largest_position_pct, 6),
+            max_observed_leverage=round(max_observed_leverage, 6),
+            position_count=len(self.positions),
+        )
+        if self.risk_state.blocked and self.status not in {"closed", "stopping"}:
+            self.last_error = self.risk_state.reason
+
+    def _notify_state_change(self) -> None:
+        if callable(self.on_state_change):
+            try:
+                self.on_state_change(self)
+            except Exception:
+                self.logger.debug("Session state callback failed", exc_info=True)

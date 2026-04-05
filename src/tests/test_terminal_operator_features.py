@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from frontend.ui.chart.chart_widget import ChartWidget
-from frontend.ui.terminal import Terminal
+from frontend.ui.terminal import Terminal, _hotfix_apply_storage_settings
 
 
 class _SettingsRecorder:
@@ -137,6 +137,23 @@ def _bind(fake, *names):
         setattr(fake, name, lambda *args, _method=method, **kwargs: _method(fake, *args, **kwargs))
 
 
+class _VisibleWindowStub:
+    def __init__(self, visible=True):
+        self._visible = visible
+
+    def show(self):
+        self._visible = True
+
+    def hide(self):
+        self._visible = False
+
+    def isVisible(self):
+        return self._visible
+
+    def isHidden(self):
+        return not self._visible
+
+
 def test_create_menu_bar_adds_workspace_notifications_palette_and_favorite_actions():
     _app()
     terminal = _MenuTerminal()
@@ -160,6 +177,8 @@ def test_create_menu_bar_adds_workspace_notifications_palette_and_favorite_actio
     assert terminal.panels_menu.menuAction() in workspace_actions
     assert terminal.action_symbol_universe in terminal.tools_menu.actions()
     assert terminal.action_market_watch_panel in panels_actions
+    assert terminal.action_tick_chart_panel in panels_actions
+    assert terminal.action_session_tabs_panel in panels_actions
     assert terminal.action_system_console_panel in panels_actions
     assert terminal.backtest_menu.menuAction() in strategy_actions
     assert terminal.action_strategy_optimization in backtest_actions
@@ -171,6 +190,9 @@ def test_create_menu_bar_adds_workspace_notifications_palette_and_favorite_actio
     assert terminal.action_agent_timeline in terminal.review_menu.actions()
     assert terminal.action_agent_timeline in terminal.research_menu.actions()
     assert terminal.action_agent_timeline in terminal.tools_menu.actions()
+    assert terminal.action_trader_agent_monitor in terminal.review_menu.actions()
+    assert terminal.action_trader_agent_monitor in terminal.research_menu.actions()
+    assert terminal.action_trader_agent_monitor in terminal.tools_menu.actions()
     assert terminal.action_trader_tv in terminal.education_menu.actions()
     assert terminal.action_education_center in terminal.education_menu.actions()
     assert terminal.action_command_palette in terminal.tools_menu.actions()
@@ -201,6 +223,66 @@ def test_push_notification_dedupes_repeated_messages():
 
     assert len(fake._notification_records) == 1
     assert fake._notification_records[0]["title"] == "API disconnected"
+
+
+def test_get_or_create_tool_window_replaces_stale_detached_window_reference():
+    _app()
+    parent = QMainWindow()
+    stale_window = QMainWindow(parent)
+    stale_window.deleteLater()
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
+
+    fake = SimpleNamespace(
+        detached_tool_windows={"notification_center": stale_window},
+        _is_qt_object_alive=lambda obj: False if obj is stale_window else True,
+    )
+
+    created = Terminal._get_or_create_tool_window(fake, "notification_center", "Notification Center")
+
+    assert created is not stale_window
+    assert fake.detached_tool_windows["notification_center"] is created
+    assert created.windowTitle() == "Notification Center"
+
+
+def test_open_notification_center_builds_window_and_renders_records():
+    _app()
+    terminal = _MenuTerminal()
+    terminal._notification_records = [
+        {
+            "id": 1,
+            "timestamp": time.time(),
+            "time_text": "2026-04-01 11:42:00",
+            "created_at": "2026-04-01T11:42:00-04:00",
+            "title": "API disconnected",
+            "message": "The broker connection dropped.",
+            "level": "ERROR",
+            "source": "broker",
+        }
+    ]
+    terminal._notification_dedupe_cache = {}
+    terminal._runtime_notification_state = {}
+    terminal.controller = SimpleNamespace(language_code="en", set_language=lambda _code: None, symbols=[])
+    _bind(
+        terminal,
+        "_get_or_create_tool_window",
+        "_is_qt_object_alive",
+        "_ensure_notification_state",
+        "_refresh_notification_action_text",
+        "_refresh_notification_center_window",
+        "_open_notification_center",
+        "_workspace_context_key",
+    )
+
+    window = Terminal._open_notification_center(terminal)
+
+    assert window is not None
+    assert window.windowTitle() == "Notification Center"
+    assert window._notification_table.rowCount() == 1
+    assert "notifications shown" in window._notification_summary.text()
+    assert window._notification_table.item(0, 2).text() == "API disconnected"
+    assert window._notification_table.item(0, 3).text() == "The broker connection dropped."
 
 
 def test_manual_trade_default_payload_uses_saved_template_values():
@@ -234,20 +316,27 @@ def test_manual_trade_default_payload_uses_saved_template_values():
 
 
 def test_apply_workspace_preset_toggles_docks_and_opens_matching_tools():
-    _app()
-    fake = QMainWindow()
-    fake.settings = _SettingsRecorder()
-    fake.favorite_symbols = set()
-    fake.detached_tool_windows = {}
-    fake.system_console = SimpleNamespace(log=lambda *args, **kwargs: None)
-    fake._is_qt_object_alive = lambda obj: obj is not None
-    fake._queue_terminal_layout_fit = lambda: None
-    fake._save_workspace_layout = lambda slot="last": True
-    fake._push_notification = lambda *args, **kwargs: None
+    fake = SimpleNamespace(
+        settings=_SettingsRecorder(),
+        favorite_symbols=set(),
+        detached_tool_windows={
+            "system_logs": _VisibleWindowStub(True),
+            "market_chatgpt": _VisibleWindowStub(True),
+            "manual_trade_ticket": _VisibleWindowStub(True),
+        },
+        system_console=SimpleNamespace(log=lambda *args, **kwargs: None),
+        _is_qt_object_alive=lambda obj: obj is not None,
+        _queue_terminal_layout_fit=lambda: None,
+        _save_workspace_layout=lambda slot="last": True,
+        _push_notification=lambda *args, **kwargs: None,
+        _canonical_tool_window_key=lambda key: Terminal._canonical_tool_window_key(SimpleNamespace(), key),
+    )
     opened = []
     fake._open_tool_window_by_key = lambda key: opened.append(key)
     for attr_name in (
         "market_watch_dock",
+        "tick_chart_dock",
+        "session_tabs_dock",
         "positions_dock",
         "trade_log_dock",
         "orderbook_dock",
@@ -255,19 +344,176 @@ def test_apply_workspace_preset_toggles_docks_and_opens_matching_tools():
         "system_status_dock",
         "system_console_dock",
     ):
-        dock = QDockWidget(attr_name, fake)
-        dock.show()
-        setattr(fake, attr_name, dock)
+        setattr(fake, attr_name, _VisibleWindowStub(True))
 
     Terminal._apply_workspace_preset(fake, "risk")
 
     assert fake.market_watch_dock.isHidden()
+    assert fake.tick_chart_dock.isHidden()
+    assert fake.session_tabs_dock.isHidden()
     assert not fake.positions_dock.isHidden()
     assert not fake.orderbook_dock.isHidden()
     assert not fake.risk_heatmap_dock.isHidden()
     assert fake.system_status_dock.isHidden()
     assert fake.system_console_dock.isHidden()
+    assert fake.detached_tool_windows["system_logs"].isHidden()
+    assert fake.detached_tool_windows["market_chatgpt"].isHidden()
+    assert fake.detached_tool_windows["manual_trade_ticket"].isHidden()
     assert opened == ["portfolio_exposure", "position_analysis"]
+
+
+def test_default_dock_layout_prioritizes_chart_space_and_hides_secondary_docks():
+    _app()
+    terminal = _MenuTerminal()
+    terminal._is_qt_object_alive = lambda obj: obj is not None
+    _bind(terminal, "_safe_tabify_docks", "_normalize_workspace_sidebar_docks", "_apply_default_dock_layout")
+    for name, area in (
+        ("market_watch_dock", Qt.LeftDockWidgetArea),
+        ("tick_chart_dock", Qt.LeftDockWidgetArea),
+        ("session_tabs_dock", Qt.RightDockWidgetArea),
+        ("positions_dock", Qt.RightDockWidgetArea),
+        ("trade_log_dock", Qt.RightDockWidgetArea),
+        ("orderbook_dock", Qt.RightDockWidgetArea),
+        ("risk_heatmap_dock", Qt.RightDockWidgetArea),
+        ("ai_signal_dock", Qt.RightDockWidgetArea),
+        ("strategy_scorecard_dock", Qt.RightDockWidgetArea),
+        ("strategy_debug_dock", Qt.RightDockWidgetArea),
+        ("system_status_dock", Qt.RightDockWidgetArea),
+        ("system_console_dock", Qt.BottomDockWidgetArea),
+    ):
+        dock = QDockWidget(name, terminal)
+        dock.setObjectName(name)
+        terminal.addDockWidget(area, dock)
+        setattr(terminal, name, dock)
+    terminal.open_orders_dock = terminal.positions_dock
+    terminal.show()
+
+    Terminal._apply_default_dock_layout(terminal)
+
+    assert not terminal.market_watch_dock.isHidden()
+    assert terminal.tick_chart_dock.isHidden()
+    assert terminal.session_tabs_dock.isHidden()
+    assert not terminal.positions_dock.isHidden()
+    assert not terminal.trade_log_dock.isHidden()
+    assert not terminal.orderbook_dock.isHidden()
+    assert terminal.risk_heatmap_dock.isHidden()
+    assert terminal.ai_signal_dock.isHidden()
+    assert terminal.dockWidgetArea(terminal.positions_dock) == Qt.RightDockWidgetArea
+
+
+def test_visible_tool_window_keys_normalizes_aliases_and_extended_subwindows():
+    fake = SimpleNamespace(
+        detached_tool_windows={
+            "system_logs": _VisibleWindowStub(True),
+            "market_chatgpt": _VisibleWindowStub(True),
+            "trader_agent": _VisibleWindowStub(True),
+            "ml_research_lab": _VisibleWindowStub(True),
+            "unknown_window": _VisibleWindowStub(True),
+            "api_reference": _VisibleWindowStub(False),
+        },
+        _is_qt_object_alive=lambda obj: obj is not None,
+    )
+    _bind(fake, "_canonical_tool_window_key", "_visible_tool_window_keys")
+
+    visible = Terminal._visible_tool_window_keys(fake)
+
+    assert visible == ["logs", "market_chat", "ml_research_lab", "trader_agent_monitor"]
+
+
+def test_open_tool_window_by_key_supports_aliases_and_extended_subwindows():
+    calls = []
+    fake = SimpleNamespace(
+        _open_market_chat_window=lambda: calls.append("market_chat"),
+        _open_logs=lambda: calls.append("logs"),
+        _open_notification_center=lambda: calls.append("notification_center"),
+        _open_ml_research_window=lambda: calls.append("ml_research_lab"),
+        _open_trader_agent_monitor=lambda: calls.append("trader_agent_monitor"),
+        _show_settings_window=lambda: calls.append("application_settings"),
+        _open_risk_settings=lambda: calls.append("risk_settings"),
+        _show_backtest_window=lambda: calls.append("backtesting_workspace"),
+        _optimize_strategy=lambda: calls.append("strategy_optimization"),
+        _open_trader_tv_window=lambda: calls.append("education_trader_tv"),
+        _open_docs=lambda: calls.append("help_documentation"),
+        _open_api_docs=lambda: calls.append("api_reference"),
+        _open_manual_trade=lambda: calls.append("manual_trade_ticket"),
+        _open_trade_review_window=lambda trade: calls.append(("trade_review", trade)),
+        _open_stellar_asset_explorer_window=lambda: calls.append("stellar_asset_explorer"),
+        _open_strategy_assignment_window=lambda: calls.append("strategy_assignments"),
+    )
+    _bind(fake, "_canonical_tool_window_key", "_open_tool_window_by_key")
+
+    Terminal._open_tool_window_by_key(fake, "system_logs")
+    Terminal._open_tool_window_by_key(fake, "market_chatgpt")
+    Terminal._open_tool_window_by_key(fake, "notifications")
+    Terminal._open_tool_window_by_key(fake, "trader_agent")
+    Terminal._open_tool_window_by_key(fake, "risk_settings")
+    Terminal._open_tool_window_by_key(fake, "application_settings")
+    Terminal._open_tool_window_by_key(fake, "backtesting_workspace")
+    Terminal._open_tool_window_by_key(fake, "strategy_optimization")
+    Terminal._open_tool_window_by_key(fake, "education_trader_tv")
+    Terminal._open_tool_window_by_key(fake, "documentation")
+    Terminal._open_tool_window_by_key(fake, "api_reference")
+    Terminal._open_tool_window_by_key(fake, "manual_trade")
+    Terminal._open_tool_window_by_key(fake, "trade_review")
+    Terminal._open_tool_window_by_key(fake, "stellar_asset_explorer")
+    Terminal._open_tool_window_by_key(fake, "strategy_assigner")
+    Terminal._open_tool_window_by_key(fake, "ml_research_lab")
+
+    assert calls == [
+        "logs",
+        "market_chat",
+        "notification_center",
+        "trader_agent_monitor",
+        "risk_settings",
+        "application_settings",
+        "backtesting_workspace",
+        "strategy_optimization",
+        "education_trader_tv",
+        "help_documentation",
+        "api_reference",
+        "manual_trade_ticket",
+        ("trade_review", {}),
+        "stellar_asset_explorer",
+        "strategy_assignments",
+        "ml_research_lab",
+    ]
+
+
+def test_apply_storage_settings_falls_back_to_local_sqlite_when_pymysql_is_missing():
+    calls = []
+
+    def _configure_storage_database(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("database_mode") == "remote":
+            raise ModuleNotFoundError("No module named 'pymysql'")
+        return "sqlite:///fallback.sqlite3"
+
+    fake = SimpleNamespace(
+        controller=SimpleNamespace(configure_storage_database=_configure_storage_database),
+    )
+
+    notice = _hotfix_apply_storage_settings(
+        fake,
+        "remote",
+        "mysql+pymysql://user:secret@localhost:3306/sopotek_trading?charset=utf8mb4",
+        True,
+    )
+
+    assert "PyMySQL" in notice
+    assert calls == [
+        {
+            "database_mode": "remote",
+            "database_url": "mysql+pymysql://user:secret@localhost:3306/sopotek_trading?charset=utf8mb4",
+            "persist": True,
+            "raise_on_error": True,
+        },
+        {
+            "database_mode": "local",
+            "database_url": "",
+            "persist": True,
+            "raise_on_error": False,
+        },
+    ]
 
 
 def test_command_palette_entries_include_operator_actions():
@@ -277,6 +523,7 @@ def test_command_palette_entries_include_operator_actions():
         _open_notification_center=lambda: None,
         _open_symbol_universe=lambda: None,
         _open_agent_timeline=lambda: None,
+        _open_trader_agent_monitor=lambda: None,
         _open_performance=lambda: None,
         _show_portfolio_exposure=lambda: None,
         _open_position_analysis_window=lambda: None,
@@ -310,6 +557,7 @@ def test_command_palette_entries_include_operator_actions():
     assert "Risk Workspace" in titles
     assert "Review Workspace" in titles
     assert "Symbol Universe" in titles
+    assert "Trader Agent Monitor" in titles
     assert "Export Diagnostics Bundle" in titles
     assert "Reset Dock Layout" in titles
     assert "Show Market Watch" in titles
@@ -480,6 +728,109 @@ def test_open_agent_timeline_builds_runtime_table_from_controller_feed():
     Terminal._refresh_agent_timeline_details(terminal, window)
     assert "Agent/Event: SignalAgent" in window._agent_timeline_detail_browser.toPlainText()
     assert '"confidence": 0.82' in window._agent_timeline_detail_browser.toPlainText()
+
+
+def test_open_trader_agent_monitor_builds_live_decision_view():
+    _app()
+    terminal = _MenuTerminal()
+    now = time.time()
+    terminal.controller = SimpleNamespace(
+        language_code="en",
+        set_language=lambda _code: None,
+        symbols=[],
+        live_agent_runtime_feed=lambda limit=200, symbol=None, kinds=None: [
+            {
+                "timestamp_label": "2026-03-17 10:06:00 UTC",
+                "timestamp": now - 5,
+                "kind": "bus",
+                "agent_name": "TraderAgent",
+                "event_type": "DECISION_EVENT",
+                "profile_id": "growth",
+                "symbol": "EUR/USD",
+                "action": "BUY",
+                "strategy_name": "Trend Following",
+                "confidence": 0.78,
+                "model_probability": 0.84,
+                "reason": "BUY because weighted voting favored Trend Following and the growth profile allows the trade.",
+                "applied_constraints": ["growth profile", "full size"],
+                "votes": {"buy": 1.24, "sell": 0.31},
+                "features": {"rsi": 31.4, "volatility": 0.012},
+                "payload": {"profile_id": "growth", "action": "BUY"},
+            },
+            {
+                "timestamp_label": "2026-03-17 10:04:00 UTC",
+                "timestamp": now - 20,
+                "kind": "bus",
+                "agent_name": "TraderAgent",
+                "event_type": "DECISION_EVENT",
+                "profile_id": "growth",
+                "symbol": "EUR/USD",
+                "action": "HOLD",
+                "strategy_name": "Trend Following",
+                "confidence": 0.55,
+                "model_probability": 0.61,
+                "reason": "HOLD while the signal stabilizes.",
+                "applied_constraints": ["growth profile"],
+                "votes": {"buy": 0.66, "sell": 0.51},
+                "features": {"rsi": 48.1},
+                "payload": {"profile_id": "growth", "action": "HOLD"},
+            },
+            {
+                "timestamp_label": "2026-03-17 10:02:00 UTC",
+                "timestamp": now - 40,
+                "kind": "bus",
+                "agent_name": "TraderAgent",
+                "event_type": "DECISION_EVENT",
+                "profile_id": "income",
+                "symbol": "BTC/USDT",
+                "action": "SKIP",
+                "strategy_name": "ML Ensemble",
+                "confidence": 0.33,
+                "model_probability": 0.29,
+                "reason": "SKIP because the income profile requires higher confidence.",
+                "applied_constraints": ["income profile", "low confidence"],
+                "votes": {"buy": 0.41, "sell": 0.39},
+                "features": {"order_book_imbalance": -0.12},
+                "payload": {"profile_id": "income", "action": "SKIP"},
+            },
+        ],
+    )
+    _bind(
+        terminal,
+        "_get_or_create_tool_window",
+        "_is_qt_object_alive",
+        "_trader_agent_monitor_rows",
+        "_selected_trader_agent_monitor_row",
+        "_populate_trader_agent_monitor_filters",
+        "_refresh_trader_agent_monitor_details",
+        "_refresh_trader_agent_monitor_window",
+        "_open_trader_agent_monitor",
+        "_open_agent_timeline",
+    )
+
+    window = Terminal._open_trader_agent_monitor(terminal)
+    tree = window._trader_agent_monitor_tree
+
+    assert tree.topLevelItemCount() == 2
+    assert window._trader_agent_monitor_profile_filter.findText("growth") >= 0
+    assert window._trader_agent_monitor_action_filter.findText("BUY") >= 0
+    assert window._trader_agent_monitor_strategy_filter.findText("Trend Following") >= 0
+    assert "BUY: 1" in window._trader_agent_monitor_score_label.text()
+    assert "SKIP: 1" in window._trader_agent_monitor_score_label.text()
+    assert "growth" in window._trader_agent_monitor_profile_label.text()
+
+    eur_group = tree.topLevelItem(0)
+    tree.setCurrentItem(eur_group.child(0))
+    Terminal._refresh_trader_agent_monitor_details(terminal, window)
+    detail_text = window._trader_agent_monitor_detail_browser.toPlainText()
+    assert "Profile: growth" in detail_text
+    assert "Reasoning:" in detail_text
+    assert "growth profile allows the trade" in detail_text
+
+    window._trader_agent_monitor_action_filter.setCurrentText("SKIP")
+    Terminal._refresh_trader_agent_monitor_window(terminal, window)
+    assert tree.topLevelItemCount() == 1
+    assert tree.topLevelItem(0).text(2) == "BTC/USDT"
 
 
 def test_replay_selected_agent_timeline_symbol_opens_strategy_assigner_for_selected_symbol():

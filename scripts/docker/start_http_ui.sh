@@ -18,6 +18,7 @@ export SCREEN_HEIGHT="${SCREEN_HEIGHT:-900}"
 export SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
 export VNC_PORT="${VNC_PORT:-5900}"
 export NOVNC_PORT="${NOVNC_PORT:-6080}"
+export NOVNC_RESIZE_MODE="${NOVNC_RESIZE_MODE:-off}"
 export X11VNC_EXTRA_ARGS="${X11VNC_EXTRA_ARGS:-}"
 
 mkdir -p "$XDG_RUNTIME_DIR" /app/logs
@@ -62,7 +63,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-printf '%s\n' "Browser UI available at http://localhost:${NOVNC_PORT}/vnc.html?autoconnect=1&resize=scale"
+printf '%s\n' "Browser UI available at http://localhost:${NOVNC_PORT}/vnc.html?autoconnect=1&resize=${NOVNC_RESIZE_MODE}"
+if [ "$NOVNC_RESIZE_MODE" = "off" ]; then
+    printf '%s\n' "Browser scrolling is enabled for the full desktop view. Set NOVNC_RESIZE_MODE=scale if you prefer fit-to-window scaling."
+fi
 printf '%s\n' "Clipboard bridge enabled. If your browser blocks Ctrl+V, use the noVNC clipboard panel to paste text into the app."
 
 python -m sopotek_trading "$@"

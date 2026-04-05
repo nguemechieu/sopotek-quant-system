@@ -13,7 +13,6 @@ import asyncio
 
 import html
 import json
-import os
 from pathlib import Path
 import random
 import re
@@ -30,7 +29,7 @@ import pyqtgraph as pg  # type: ignore[import-untyped]
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
-from PySide6.QtCore import Qt, QDate, QSettings, QDateTime, Signal, QTimer, QUrl, QRect
+from PySide6.QtCore import Qt, QDate, QSettings, QDateTime, Signal, QTimer, QUrl, QRect, QEvent
 from PySide6.QtGui import QAction, QActionGroup, QColor, QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QDockWidget, QSpinBox,
@@ -120,7 +119,6 @@ from frontend.ui.panels.manual_trade_updates import (
     suggest_manual_trade_levels,
     validate_manual_trade_amount,
 )
-from storage.trade_repository import derive_trade_outcome
 from frontend.ui.panels.performance_updates import (
     performance_snapshot,
     populate_performance_symbol_table,
@@ -435,6 +433,21 @@ def _read_pyproject_version(pyproject_path: Path) -> str | None:
     return None
 
 
+def _bounded_terminal_window_extent(requested, available, *, margin=24, minimum=640):
+    try:
+        requested_value = int(requested)
+    except Exception:
+        requested_value = int(minimum)
+
+    try:
+        available_value = int(available)
+    except Exception:
+        available_value = requested_value
+
+    usable = max(320, available_value - max(0, int(margin)))
+    bounded_minimum = min(max(320, int(minimum)), usable)
+    bounded_size = max(bounded_minimum, min(requested_value, usable))
+    return bounded_size, bounded_minimum
 
 
 class Terminal(QMainWindow):
@@ -459,6 +472,9 @@ class Terminal(QMainWindow):
 
         self.controller = controller
         self.logger = controller.logger
+        self.bound_session_id = str(getattr(controller, "active_session_id", "") or "").strip()
+        self.bound_session_label = ""
+        self._controller_signal_bindings = []
 
         self.settings = QSettings("Sopotek", "TradingPlatform")
 
@@ -482,7 +498,14 @@ class Terminal(QMainWindow):
         self.AI_TABLE_REFRESH_MIN_SECONDS = 0.5
         self.current_timeframe = getattr(controller,"time_frame")
         self.autotrading_enabled = False
-        self.autotrade_scope_value = str(getattr(controller, "autotrade_scope", "all") or "all").lower()
+        scope_normalizer = getattr(controller, "_normalize_autotrade_scope", None)
+        if callable(scope_normalizer):
+            try:
+                self.autotrade_scope_value = str(scope_normalizer(getattr(controller, "autotrade_scope", "all")) or "all").lower()
+            except Exception:
+                self.autotrade_scope_value = str(getattr(controller, "autotrade_scope", "all") or "all").lower()
+        else:
+            self.autotrade_scope_value = str(getattr(controller, "autotrade_scope", "all") or "all").lower()
         self.autotrade_watchlist = set(getattr(controller, "autotrade_watchlist", set()) or set())
 
         self.training_status = {}
@@ -522,8 +545,6 @@ class Terminal(QMainWindow):
         if hasattr(self.controller, "license_changed"):
             self.controller.license_changed.connect(lambda _status: self._handle_license_status_change())
 
-        self.controller.symbols_signal.connect(self._update_symbols)
-
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self._refresh_terminal)
         self.refresh_timer.start(1000)
@@ -539,9 +560,9 @@ class Terminal(QMainWindow):
         """Configure core terminal window settings and initialize state holders."""
 
         self.order_type = self.controller.order_type
-        self.setWindowTitle("Sopotek AI Trading Terminal")
-        self.resize(1700, 950)
-        self.setMinimumSize(1024, 680)
+        self.setWindowTitle(self._terminal_window_title())
+        self.resize(1600, 900)
+        self.setMinimumSize(960, 640)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setDockOptions(
             # GroupedDragging has been unstable on Windows when hidden/tabbed docks
@@ -550,6 +571,7 @@ class Terminal(QMainWindow):
             | QMainWindow.DockOption.AllowTabbedDocks
             | QMainWindow.DockOption.AnimatedDocks
         )
+        self._pending_initial_window_fit = True
 
         self.connection_indicator = QLabel("● CONNECTING")
         self.connection_indicator.setStyleSheet(
@@ -560,6 +582,11 @@ class Terminal(QMainWindow):
         self.toolbar = None
         self.toolbar_timeframe_label = None
         self.autotrade_scope_picker = None
+        self.autotrade_scope_label_widget = None
+        self.autotrade_controls_box = None
+        self.autotrade_controls_layout = None
+        self.autotrade_controls_row = None
+        self._autotrade_toolbar_layout_mode = "full"
         self.system_status_button = None
         self.system_status_dock = None
         self.ai_signal_dock = None
@@ -579,6 +606,9 @@ class Terminal(QMainWindow):
         self.live_trading_bar_label = None
         self.live_trading_bar = None
         self.session_mode_badge = None
+        self.session_selector = None
+        self.session_tabs_dock = None
+        self.session_tabs_widget = None
         self.license_badge = None
         self.kill_switch_button = None
         self.symbol_picker = None
@@ -587,6 +617,133 @@ class Terminal(QMainWindow):
         self._last_chart_request_key = None
         self.current_connection_status = "connecting"
         self.language_actions = {}
+
+    def _terminal_window_title(self):
+        label = str(getattr(self, "bound_session_label", "") or "").strip()
+        session_id = str(getattr(self, "bound_session_id", "") or "").strip()
+        suffix = label or session_id
+        if suffix:
+            return f"Sopotek AI Trading Terminal - {suffix}"
+        return "Sopotek AI Trading Terminal"
+
+    def _fit_window_to_available_screen(self, requested_width=None, requested_height=None):
+        screen = self.screen()
+        if screen is None:
+            app = QApplication.instance()
+            screen = app.primaryScreen() if app is not None else None
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        width, minimum_width = _bounded_terminal_window_extent(
+            requested_width if requested_width is not None else self.width() or 1600,
+            available.width(),
+            minimum=960,
+        )
+        height, minimum_height = _bounded_terminal_window_extent(
+            requested_height if requested_height is not None else self.height() or 900,
+            available.height(),
+            minimum=640,
+        )
+        self.setMinimumSize(minimum_width, minimum_height)
+        self.resize(width, height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_pending_initial_window_fit", False):
+            self._pending_initial_window_fit = False
+            QTimer.singleShot(0, self._fit_window_to_available_screen)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        refresh_autotrade_controls_layout = getattr(self, "_refresh_autotrade_controls_layout", None)
+        if callable(refresh_autotrade_controls_layout):
+            refresh_autotrade_controls_layout()
+
+    def bind_session(self, session_id, label=None):
+        self.bound_session_id = str(session_id or "").strip()
+        self.bound_session_label = str(label or "").strip()
+        self.setWindowTitle(self._terminal_window_title())
+        refresh_picker = getattr(self, "_refresh_session_selector", None)
+        if callable(refresh_picker):
+            refresh_picker()
+        refresh_tabs = getattr(self, "_refresh_session_tabs", None)
+        if callable(refresh_tabs):
+            refresh_tabs()
+        update_badge = getattr(self, "_update_session_badge", None)
+        if callable(update_badge):
+            update_badge()
+
+    def _session_is_current(self):
+        bound_session_id = str(getattr(self, "bound_session_id", "") or "").strip()
+        if not bound_session_id:
+            return True
+        controller = getattr(self, "controller", None)
+        active_session_id = str(getattr(controller, "active_session_id", "") or "").strip()
+        return bound_session_id == active_session_id
+
+    def _extract_session_id_from_payload(self, value):
+        if isinstance(value, dict):
+            session_id = str(value.get("session_id") or "").strip()
+            if session_id:
+                return session_id
+            for nested_key in ("metadata", "event", "trade", "signal"):
+                nested_value = value.get(nested_key)
+                nested_session_id = self._extract_session_id_from_payload(nested_value)
+                if nested_session_id:
+                    return nested_session_id
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                nested_session_id = self._extract_session_id_from_payload(item)
+                if nested_session_id:
+                    return nested_session_id
+        return ""
+
+    def _payload_session_matches_terminal(self, *args, **kwargs):
+        bound_session_id = str(getattr(self, "bound_session_id", "") or "").strip()
+        if not bound_session_id:
+            return True
+
+        payload_session_id = ""
+        for value in list(args) + list(kwargs.values()):
+            payload_session_id = self._extract_session_id_from_payload(value)
+            if payload_session_id:
+                break
+
+        if not payload_session_id:
+            return self._session_is_current()
+        return payload_session_id == bound_session_id
+
+    def _session_scoped_slot(self, slot):
+        def _wrapped(*args, **kwargs):
+            if getattr(self, "_ui_shutting_down", False):
+                return None
+            if not self._payload_session_matches_terminal(*args, **kwargs):
+                return None
+            return slot(*args, **kwargs)
+
+        return _wrapped
+
+    def _maybe_activate_bound_session(self):
+        controller = getattr(self, "controller", None)
+        if controller is None:
+            return
+        bound_session_id = str(getattr(self, "bound_session_id", "") or "").strip()
+        if not bound_session_id:
+            controller.terminal = self
+            return
+        if str(getattr(controller, "active_session_id", "") or "").strip() == bound_session_id:
+            controller.terminal = self
+            return
+        request_activation = getattr(controller, "request_session_activation", None)
+        if callable(request_activation):
+            controller.terminal = self
+            request_activation(bound_session_id)
+
+    def event(self, event):
+        if event is not None and event.type() == QEvent.Type.WindowActivate:
+            self._maybe_activate_bound_session()
+        return super().event(event)
 
     def _history_request_limit(self, fallback=None):
         """Compute effective OHLCV history limit using app, runtime, and broker caps."""
@@ -819,6 +976,23 @@ class Terminal(QMainWindow):
             if normalized in available_set:
                 return (1, available_symbols.index(normalized))
             return (2, normalized)
+        if scope == "ranked":
+            ranked_symbols = []
+            resolver = getattr(getattr(self, "controller", None), "get_best_ranked_autotrade_symbols", None)
+            if callable(resolver):
+                try:
+                    ranked_symbols = [
+                        self._normalized_symbol(item)
+                        for item in resolver(available_symbols=available_symbols)
+                        if self._normalized_symbol(item)
+                    ]
+                except Exception:
+                    ranked_symbols = []
+            if normalized in ranked_symbols:
+                return (0, ranked_symbols.index(normalized))
+            if normalized in available_set:
+                return (1, available_symbols.index(normalized))
+            return (2, normalized)
         return (9, normalized)
 
     def _reorder_market_watch_rows(self):
@@ -858,16 +1032,30 @@ class Terminal(QMainWindow):
         self.symbols_table.blockSignals(blocked)
 
     def _autotrade_scope_label(self):
+        resolver = getattr(getattr(self, "controller", None), "_autotrade_scope_display_name", None)
+        if callable(resolver):
+            try:
+                return str(resolver(self.autotrade_scope_value or "all") or "All Symbols")
+            except Exception:
+                pass
         labels = {
             "all": "All Symbols",
             "selected": "Selected Symbol",
             "watchlist": "Watchlist",
+            "ranked": "Best Ranked",
         }
         return labels.get(str(self.autotrade_scope_value or "all").lower(), "All Symbols")
 
     def _apply_autotrade_scope(self, scope):
-        normalized = str(scope or "all").strip().lower()
-        if normalized not in {"all", "selected", "watchlist"}:
+        normalizer = getattr(getattr(self, "controller", None), "_normalize_autotrade_scope", None)
+        if callable(normalizer):
+            try:
+                normalized = str(normalizer(scope) or "all").strip().lower()
+            except Exception:
+                normalized = str(scope or "all").strip().lower()
+        else:
+            normalized = str(scope or "all").strip().lower()
+        if normalized not in {"all", "selected", "watchlist", "ranked"}:
             normalized = "all"
         self.autotrade_scope_value = normalized
         if hasattr(self.controller, "set_autotrade_scope"):
@@ -880,7 +1068,7 @@ class Terminal(QMainWindow):
                 self.autotrade_scope_picker.setCurrentIndex(index)
                 self.autotrade_scope_picker.blockSignals(blocked)
             self.autotrade_scope_picker.setToolTip(
-                "Choose whether AI trading scans all loaded symbols, only the active symbol, or only checked watchlist symbols."
+                "Choose whether AI trading scans all loaded symbols, only the active symbol, checked watchlist symbols, or the broker's best-ranked candidates."
             )
         self._update_autotrade_button()
         if hasattr(self, "status_labels"):
@@ -1725,13 +1913,100 @@ class Terminal(QMainWindow):
             finally:
                 action.blockSignals(False)
 
+    def _autotrade_toolbar_mode(self, available_width=None):
+        width = int(available_width or 0)
+        if width <= 0:
+            toolbar = getattr(self, "secondary_toolbar", None)
+            try:
+                width = int(toolbar.width() or 0)
+            except Exception:
+                width = 0
+        if width <= 0:
+            try:
+                width = int(self.width() or 0)
+            except Exception:
+                width = 0
+        if width and width < 460:
+            return "tight"
+        if width and width < 640:
+            return "compact"
+        return "full"
+
+    def _refresh_autotrade_controls_layout(self, available_width=None):
+        layout = getattr(self, "autotrade_controls_layout", None)
+        label = getattr(self, "autotrade_scope_label_widget", None)
+        picker = getattr(self, "autotrade_scope_picker", None)
+        button = getattr(self, "auto_button", None)
+        box = getattr(self, "autotrade_controls_box", None)
+        row = getattr(self, "autotrade_controls_row", None)
+
+        mode = Terminal._autotrade_toolbar_mode(self, available_width)
+        self._autotrade_toolbar_layout_mode = mode
+
+        if layout is not None:
+            if mode == "tight":
+                layout.setContentsMargins(6, 4, 6, 4)
+                layout.setSpacing(6)
+            elif mode == "compact":
+                layout.setContentsMargins(8, 5, 8, 5)
+                layout.setSpacing(7)
+            else:
+                layout.setContentsMargins(8, 6, 8, 6)
+                layout.setSpacing(8)
+
+        if row is not None:
+            row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        if box is not None:
+            box.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
+
+        if label is not None:
+            label.setVisible(mode != "tight")
+
+        if picker is not None:
+            picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            if mode == "tight":
+                picker.setMinimumContentsLength(6)
+                picker.setMinimumWidth(82)
+                picker.setMaximumWidth(108)
+            elif mode == "compact":
+                picker.setMinimumContentsLength(8)
+                picker.setMinimumWidth(96)
+                picker.setMaximumWidth(128)
+            else:
+                picker.setMinimumContentsLength(10)
+                picker.setMinimumWidth(108)
+                picker.setMaximumWidth(148)
+
+        if button is not None:
+            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            if mode == "tight":
+                button.setMinimumWidth(92)
+            elif mode == "compact":
+                button.setMinimumWidth(126)
+            else:
+                button.setMinimumWidth(148)
+
+    def _autotrade_button_text(self, enabled, phase=0, mode=None):
+        current_mode = str(mode or getattr(self, "_autotrade_toolbar_layout_mode", "full") or "full").lower()
+        if enabled:
+            if current_mode == "tight":
+                return "Stop"
+            return "Stop Trading"
+        if current_mode == "tight":
+            return "Start"
+        return "Start Trading"
+
     def _update_autotrade_button(self):
-        scope_suffix = f" [{self._autotrade_scope_label()}]"
+        refresh_autotrade_controls_layout = getattr(self, "_refresh_autotrade_controls_layout", None)
+        if callable(refresh_autotrade_controls_layout):
+            refresh_autotrade_controls_layout()
+        layout_mode = str(getattr(self, "_autotrade_toolbar_layout_mode", "full") or "full").lower()
         phase = getattr(self, "_spinner_index", 0) % 3
         self.auto_button.setChecked(bool(self.autotrading_enabled))
         if self.autotrading_enabled:
-            live_texts = ["AI Trading ON", "AI Trading ON.", "AI Trading ON.."]
-            self.auto_button.setText(f"{live_texts[phase]}{scope_suffix}")
+            padding = "8px 12px" if layout_mode == "tight" else "9px 15px" if layout_mode == "compact" else "10px 18px"
+            self.auto_button.setText(Terminal._autotrade_button_text(self, True, phase=phase, mode=layout_mode))
             self.auto_button.setStyleSheet(
                 """
                 QPushButton {
@@ -1739,17 +2014,19 @@ class Terminal(QMainWindow):
                     color: #d7ffe9;
                     border: 2px solid #32d296;
                     border-radius: 14px;
-                    padding: 10px 18px;
+                    padding: %s;
                     font-weight: 700;
                 }
                 QPushButton:hover {
                     background-color: #184630;
                 }
                 """
+                % padding
             )
             self._update_trading_activity_indicator(active=True)
         else:
-            self.auto_button.setText(f"AI Trading OFF{scope_suffix}")
+            padding = "8px 12px" if layout_mode == "tight" else "9px 15px" if layout_mode == "compact" else "10px 18px"
+            self.auto_button.setText(Terminal._autotrade_button_text(self, False, mode=layout_mode))
             self.auto_button.setStyleSheet(
                 """
                 QPushButton {
@@ -1757,18 +2034,21 @@ class Terminal(QMainWindow):
                     color: #ffd9de;
                     border: 2px solid #b45b68;
                     border-radius: 14px;
-                    padding: 10px 18px;
+                    padding: %s;
                     font-weight: 700;
                 }
                 QPushButton:hover {
                     background-color: #442026;
                 }
                 """
+                % padding
             )
             self._update_trading_activity_indicator(active=False)
-        self.auto_button.setMinimumWidth(164)
+        scope_label = self._autotrade_scope_label()
+        action_label = "Stop Trading" if self.autotrading_enabled else "Start Trading"
+        self.auto_button.setAccessibleName(action_label)
         self.auto_button.setToolTip(
-            "Turn AI auto trading on or off for the current scope. "
+            f"{action_label} for {scope_label}. "
             "When enabled, the bot scans the chosen symbols and sends live signals/orders."
         )
         self._update_live_trading_bar()
@@ -2342,6 +2622,43 @@ class Terminal(QMainWindow):
         self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, controls_toolbar)
 
+        session_box = QFrame()
+        session_box.setStyleSheet(
+            "QFrame { background-color: #101827; border: 1px solid #24324a; border-radius: 14px; }"
+        )
+        session_layout = QHBoxLayout(session_box)
+        session_layout.setContentsMargins(10, 6, 10, 6)
+        session_layout.setSpacing(8)
+
+        self.session_label = QLabel("Session")
+        self.session_label.setStyleSheet("color: #9fb0c7; font-weight: 700;")
+        session_layout.addWidget(self.session_label)
+
+        self.session_selector = QComboBox()
+        self.session_selector.setMinimumWidth(180)
+        self.session_selector.setMaximumWidth(260)
+        self.session_selector.setStyleSheet(
+            """
+            QComboBox {
+                background-color: #162033;
+                color: #d7dfeb;
+                border: 1px solid #2d3a56;
+                border-radius: 10px;
+                padding: 6px 10px;
+                font-weight: 600;
+            }
+            QComboBox::drop-down {
+                border: 0;
+                width: 24px;
+            }
+            """
+        )
+        activate_selected_session = getattr(self, "_activate_selected_session_from_toolbar", None)
+        if callable(activate_selected_session):
+            self.session_selector.currentIndexChanged.connect(activate_selected_session)
+        session_layout.addWidget(self.session_selector)
+        toolbar.addWidget(session_box)
+
         symbol_box = QFrame()
         symbol_box.setStyleSheet(
             "QFrame { background-color: #101827; border: 1px solid #24324a; border-radius: 14px; }"
@@ -2444,23 +2761,34 @@ class Terminal(QMainWindow):
 
         toolbar.addWidget(utility_box)
 
-        controls_spacer = QWidget()
-        controls_spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        controls_toolbar.addWidget(controls_spacer)
+        controls_row = QWidget()
+        controls_row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        controls_row_layout = QHBoxLayout(controls_row)
+        controls_row_layout.setContentsMargins(0, 0, 0, 0)
+        controls_row_layout.setSpacing(0)
+        controls_row_layout.addStretch(1)
+        self.autotrade_controls_row = controls_row
 
         actions_box = QFrame()
         actions_box.setStyleSheet(frame_style)
+        actions_box.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
+        self.autotrade_controls_box = actions_box
         actions_layout = QHBoxLayout(actions_box)
         actions_layout.setContentsMargins(8, 6, 8, 6)
         actions_layout.setSpacing(8)
+        self.autotrade_controls_layout = actions_layout
 
         scope_label = QLabel("Scope")
         scope_label.setStyleSheet("color: #9fb0c7; font-weight: 700;")
+        self.autotrade_scope_label_widget = scope_label
         actions_layout.addWidget(scope_label)
 
         self.autotrade_scope_picker = QComboBox()
         self.autotrade_scope_picker.setMinimumWidth(108)
-        self.autotrade_scope_picker.setMaximumWidth(126)
+        self.autotrade_scope_picker.setMaximumWidth(148)
+        self.autotrade_scope_picker.setMinimumContentsLength(10)
+        self.autotrade_scope_picker.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.autotrade_scope_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.autotrade_scope_picker.setStyleSheet(
             """
             QComboBox {
@@ -2480,19 +2808,28 @@ class Terminal(QMainWindow):
         self.autotrade_scope_picker.addItem("All Symbols", "all")
         self.autotrade_scope_picker.addItem("Selected Symbol", "selected")
         self.autotrade_scope_picker.addItem("Watchlist", "watchlist")
+        self.autotrade_scope_picker.addItem("Best Ranked", "ranked")
         self.autotrade_scope_picker.currentIndexChanged.connect(self._change_autotrade_scope)
         actions_layout.addWidget(self.autotrade_scope_picker)
 
         self.auto_button = QPushButton()
         self.auto_button.setCheckable(True)
+        self.auto_button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.auto_button.clicked.connect(self._toggle_autotrading)
         actions_layout.addWidget(self.auto_button)
 
-        controls_toolbar.addWidget(actions_box)
+        controls_row_layout.addWidget(actions_box, 0, Qt.AlignmentFlag.AlignRight)
+        controls_toolbar.addWidget(controls_row)
 
         self._set_active_timeframe_button(self.current_timeframe)
         self._apply_autotrade_scope(self.autotrade_scope_value)
+        refresh_autotrade_controls_layout = getattr(self, "_refresh_autotrade_controls_layout", None)
+        if callable(refresh_autotrade_controls_layout):
+            refresh_autotrade_controls_layout()
         self._update_autotrade_button()
+        refresh_session_selector = getattr(self, "_refresh_session_selector", None)
+        if callable(refresh_session_selector):
+            refresh_session_selector()
         self._update_session_badge()
         self._update_live_trading_bar()
         self._update_kill_switch_button()
@@ -2537,6 +2874,8 @@ class Terminal(QMainWindow):
                     message = "Watchlist scope is selected, but no symbols are checked in Market Watch."
                 elif self.autotrade_scope_value == "selected":
                     message = "Selected-symbol scope is selected, but there is no active symbol yet."
+                elif self.autotrade_scope_value == "ranked":
+                    message = "Best-ranked scope is selected, but there are no ranked or tradable symbols ready yet."
                 QMessageBox.warning(self, "AI Trading Scope", message)
                 self.autotrading_enabled = False
                 self._update_autotrade_button()
@@ -2621,6 +2960,47 @@ class Terminal(QMainWindow):
             "Emergency lock is active. Auto trading is OFF and new orders are blocked until you press Resume.",
             QMessageBox.Icon.Warning,
         )
+
+    def _refresh_session_selector(self):
+        selector = getattr(self, "session_selector", None)
+        controller = getattr(self, "controller", None)
+        if selector is None or controller is None or not hasattr(controller, "list_trading_sessions"):
+            return
+
+        try:
+            sessions = list(controller.list_trading_sessions() or [])
+        except Exception:
+            sessions = []
+
+        selector.blockSignals(True)
+        selector.clear()
+        active_session_id = str(getattr(controller, "active_session_id", "") or "").strip()
+        if not sessions:
+            selector.addItem("No active sessions", "")
+            selector.blockSignals(False)
+            return
+
+        selected_index = 0
+        for index, session in enumerate(sessions):
+            session_id = str(session.get("session_id") or "").strip()
+            label = str(session.get("label") or session_id or "Session").strip()
+            status = str(session.get("status") or "unknown").upper()
+            selector.addItem(f"{label} [{status}]", session_id)
+            if session_id and session_id == active_session_id:
+                selected_index = index
+
+        selector.setCurrentIndex(selected_index)
+        selector.blockSignals(False)
+
+    def _activate_selected_session_from_toolbar(self, *_args):
+        selector = getattr(self, "session_selector", None)
+        controller = getattr(self, "controller", None)
+        if selector is None or controller is None or not hasattr(controller, "request_session_activation"):
+            return
+        session_id = str(selector.currentData() or "").strip()
+        if not session_id or session_id == str(getattr(controller, "active_session_id", "") or "").strip():
+            return
+        controller.request_session_activation(session_id)
 
     # ==========================================================
     # CHARTS
@@ -5192,36 +5572,88 @@ class Terminal(QMainWindow):
             return False
         return True
 
-    def _apply_default_dock_layout(self):
-        for dock in (
-            self.market_watch_dock,
-            self.positions_dock,
-            self.open_orders_dock,
-            self.trade_log_dock,
-            self.orderbook_dock,
-            self.risk_heatmap_dock,
-            self.ai_signal_dock,
+    def _normalize_workspace_sidebar_docks(self):
+        left_anchor = getattr(self, "market_watch_dock", None)
+        tick_dock = getattr(self, "tick_chart_dock", None)
+        if self._is_qt_object_alive(left_anchor) and self._is_qt_object_alive(tick_dock):
+            self._safe_tabify_docks(left_anchor, tick_dock)
+
+        right_candidates = []
+        for attr_name in (
+            "orderbook_dock",
+            "positions_dock",
+            "trade_log_dock",
+            "risk_heatmap_dock",
+            "ai_signal_dock",
+            "strategy_scorecard_dock",
+            "strategy_debug_dock",
+            "session_tabs_dock",
+            "system_status_dock",
         ):
-            if dock is not None:
-                dock.show()
+            dock = getattr(self, attr_name, None)
+            if not self._is_qt_object_alive(dock) or dock in right_candidates:
+                continue
+            right_candidates.append(dock)
 
-        self._safe_tabify_docks(self.positions_dock, self.open_orders_dock)
-        self._safe_tabify_docks(self.trade_log_dock, self.orderbook_dock)
-        self._safe_tabify_docks(self.trade_log_dock, self.risk_heatmap_dock)
-        self._safe_tabify_docks(self.trade_log_dock, self.ai_signal_dock)
+        if len(right_candidates) > 1:
+            anchor = right_candidates[0]
+            for dock in right_candidates[1:]:
+                self._safe_tabify_docks(anchor, dock)
 
-        if self.trade_log_dock is not None:
-            self.trade_log_dock.raise_()
-        if self.positions_dock is not None:
+        try:
+            self.resizeDocks(
+                [candidate for candidate in (self.market_watch_dock, right_candidates[0] if right_candidates else None) if candidate is not None],
+                [260, 360],
+                Qt.Orientation.Horizontal,
+            )
+        except Exception:
+            pass
+
+    def _apply_default_dock_layout(self):
+        default_areas = {
+            "market_watch_dock": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "tick_chart_dock": Qt.DockWidgetArea.LeftDockWidgetArea,
+            "positions_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "trade_log_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "orderbook_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "risk_heatmap_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "ai_signal_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "strategy_scorecard_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "strategy_debug_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "session_tabs_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "system_status_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "system_console_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+        visible_docks = {
+            "market_watch_dock",
+            "positions_dock",
+            "trade_log_dock",
+            "orderbook_dock",
+        }
+
+        for attr_name, area in default_areas.items():
+            dock = getattr(self, attr_name, None)
+            if not self._is_qt_object_alive(dock):
+                continue
+            try:
+                if dock.isFloating():
+                    dock.setFloating(False)
+            except Exception:
+                pass
+            try:
+                self.addDockWidget(area, dock)
+            except Exception:
+                pass
+            dock.show() if attr_name in visible_docks else dock.hide()
+
+        self._normalize_workspace_sidebar_docks()
+
+        if self.orderbook_dock is not None:
+            self.orderbook_dock.raise_()
+        elif self.positions_dock is not None:
             self.positions_dock.raise_()
         if self.market_watch_dock is not None:
             self.market_watch_dock.raise_()
-
-        try:
-            self.resizeDocks([dock for dock in (self.market_watch_dock, self.trade_log_dock) if dock is not None], [320, 420], Qt.Orientation.Horizontal)
-            self.resizeDocks([dock for dock in (self.positions_dock, self.open_orders_dock) if dock is not None], [280, 220], Qt.Orientation.Vertical)
-        except Exception:
-            pass
 
         self._queue_terminal_layout_fit()
 
@@ -5240,11 +5672,12 @@ class Terminal(QMainWindow):
             "positions_dock": Qt.DockWidgetArea.RightDockWidgetArea,
             "open_orders_dock": Qt.DockWidgetArea.RightDockWidgetArea,
             "trade_log_dock": Qt.DockWidgetArea.RightDockWidgetArea,
-            "orderbook_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
-            "risk_heatmap_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
-            "ai_signal_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
-            "strategy_scorecard_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
-            "strategy_debug_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
+            "orderbook_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "risk_heatmap_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "ai_signal_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "strategy_scorecard_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "strategy_debug_dock": Qt.DockWidgetArea.RightDockWidgetArea,
+            "session_tabs_dock": Qt.DockWidgetArea.RightDockWidgetArea,
             "system_console_dock": Qt.DockWidgetArea.BottomDockWidgetArea,
             "system_status_dock": Qt.DockWidgetArea.RightDockWidgetArea,
         }
@@ -5262,23 +5695,11 @@ class Terminal(QMainWindow):
             except Exception:
                 pass
 
+        self._normalize_workspace_sidebar_docks()
+
         dock.show()
         try:
             dock.raise_()
-        except Exception:
-            pass
-
-        try:
-            self.resizeDocks(
-                [candidate for candidate in (self.market_watch_dock, self.trade_log_dock) if candidate is not None],
-                [320, 420],
-                Qt.Orientation.Horizontal,
-            )
-            self.resizeDocks(
-                [candidate for candidate in (self.positions_dock, self.open_orders_dock) if candidate is not None],
-                [280, 220],
-                Qt.Orientation.Vertical,
-            )
         except Exception:
             pass
 
@@ -5664,32 +6085,31 @@ class Terminal(QMainWindow):
             self.logger.error(e)
 
     def _connect_signals(self):
+        self._controller_signal_bindings = []
 
-        self.controller.candle_signal.connect(self._update_chart)
-        self.controller.equity_signal.connect(self._update_equity)
-        self.controller.trade_signal.connect(self._update_trade_log)
-        self.controller.ticker_signal.connect(self._update_ticker)
-        if hasattr(self.controller, "news_signal"):
-            self.controller.news_signal.connect(self._update_news)
+        def _bind(signal_name, slot):
+            signal = getattr(self.controller, signal_name, None)
+            if signal is None:
+                return
+            wrapped = self._session_scoped_slot(slot)
+            signal.connect(wrapped)
+            self._controller_signal_bindings.append((signal, wrapped))
 
-        self.controller.orderbook_signal.connect(
-            self._update_orderbook
-        )
-        if hasattr(self.controller, "recent_trades_signal"):
-            self.controller.recent_trades_signal.connect(self._update_recent_trades)
-
-        if hasattr(self.controller, "ai_signal_monitor"):
-            self.controller.ai_signal_monitor.connect(self._update_ai_signal)
-
-        self.controller.strategy_debug_signal.connect(self._handle_strategy_debug)
-        if hasattr(self.controller, "agent_runtime_signal"):
-            self.controller.agent_runtime_signal.connect(self._handle_agent_runtime_event)
-
-        self.controller.training_status_signal.connect(
-            self._update_training_status
-        )
+        _bind("candle_signal", self._update_chart)
+        _bind("equity_signal", self._update_equity)
+        _bind("trade_signal", self._update_trade_log)
+        _bind("ticker_signal", self._update_ticker)
+        _bind("news_signal", self._update_news)
+        _bind("orderbook_signal", self._update_orderbook)
+        _bind("recent_trades_signal", self._update_recent_trades)
+        _bind("ai_signal_monitor", self._update_ai_signal)
+        _bind("strategy_debug_signal", self._handle_strategy_debug)
+        _bind("agent_runtime_signal", self._handle_agent_runtime_event)
+        _bind("training_status_signal", self._update_training_status)
+        _bind("symbols_signal", self._update_symbols)
 
     def _setup_panels(self):
+        self._create_session_tabs_panel()
         self._create_system_console_panel()
 
         self._create_market_watch_panel()
@@ -5705,6 +6125,112 @@ class Terminal(QMainWindow):
 
     def _create_system_console_panel(self):
         create_system_console_panel(self)
+
+    def _create_session_tabs_panel(self):
+        dock = QDockWidget("Sessions", self)
+        dock.setObjectName("session_tabs_dock")
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+
+        tabs = QTabWidget()
+        tabs.setObjectName("session_tabs_widget")
+        dock.setWidget(tabs)
+
+        self.session_tabs_dock = dock
+        self.session_tabs_widget = tabs
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self._refresh_session_tabs()
+
+    def _refresh_session_tabs(self):
+        tabs = getattr(self, "session_tabs_widget", None)
+        controller = getattr(self, "controller", None)
+        if tabs is None or controller is None or not hasattr(controller, "list_trading_sessions"):
+            return
+
+        try:
+            sessions = list(controller.list_trading_sessions() or [])
+        except Exception:
+            sessions = []
+
+        while tabs.count():
+            widget = tabs.widget(0)
+            tabs.removeTab(0)
+            if widget is not None:
+                widget.deleteLater()
+
+        if not sessions:
+            placeholder = QTextBrowser()
+            placeholder.setHtml("<p>No active sessions yet.</p>")
+            tabs.addTab(placeholder, "Sessions")
+            return
+
+        aggregate = {}
+        if hasattr(controller, "aggregate_session_portfolio"):
+            try:
+                aggregate = dict(controller.aggregate_session_portfolio() or {})
+            except Exception:
+                aggregate = {}
+        portfolio_viewer = QTextBrowser()
+        portfolio_viewer.setHtml(
+            "<h3>Portfolio Aggregator</h3>"
+            "<p><b>Sessions:</b> {sessions}<br>"
+            "<b>Running:</b> {running}<br>"
+            "<b>Risk Blocked:</b> {risk_blocked}<br>"
+            "<b>Total Equity:</b> {equity:,.2f}<br>"
+            "<b>Gross Exposure:</b> {exposure:,.2f}<br>"
+            "<b>Unrealized PnL:</b> {pnl:,.2f}</p>"
+            "<p>Use the toolbar selector or the dashboard to switch, start, stop, or remove individual broker sessions.</p>".format(
+                sessions=int(aggregate.get("session_count") or len(sessions)),
+                running=int(aggregate.get("running_sessions") or 0),
+                risk_blocked=int(aggregate.get("risk_blocked_sessions") or 0),
+                equity=float(aggregate.get("total_equity") or 0.0),
+                exposure=float(aggregate.get("total_gross_exposure") or 0.0),
+                pnl=float(aggregate.get("total_unrealized_pnl") or 0.0),
+            )
+        )
+        tabs.addTab(portfolio_viewer, "Portfolio")
+
+        active_session_id = str(getattr(controller, "active_session_id", "") or "").strip()
+        selected_index = 1 if tabs.count() else 0
+        for index, session in enumerate(sessions):
+            viewer = QTextBrowser()
+            label = str(session.get("label") or session.get("session_id") or "Session").strip()
+            status = str(session.get("status") or "unknown").upper()
+            mode = str(session.get("mode") or "paper").upper()
+            equity = float(session.get("equity") or 0.0)
+            drawdown = float(session.get("drawdown_pct") or 0.0)
+            gross_exposure = float(session.get("gross_exposure") or 0.0)
+            viewer.setHtml(
+                "<h3>{label}</h3>"
+                "<p><b>Status:</b> {status}<br>"
+                "<b>Mode:</b> {mode}<br>"
+                "<b>Account:</b> {account}<br>"
+                "<b>Equity:</b> {equity:,.2f}<br>"
+                "<b>Drawdown:</b> {drawdown:.2%}<br>"
+                "<b>Gross Exposure:</b> {gross_exposure:,.2f}<br>"
+                "<b>Symbols:</b> {symbols}<br>"
+                "<b>Positions:</b> {positions}<br>"
+                "<b>Open Orders:</b> {orders}<br>"
+                "<b>Trades:</b> {trades}<br>"
+                "<b>Strategy:</b> {strategy}</p>"
+                "<p>The main terminal workspace follows the currently active session selected in the toolbar.</p>".format(
+                    label=label,
+                    status=status,
+                    mode=mode,
+                    account=str(session.get("account_label") or "Not set"),
+                    equity=equity,
+                    drawdown=drawdown,
+                    gross_exposure=gross_exposure,
+                    symbols=int(session.get("symbols_count") or 0),
+                    positions=int(session.get("positions_count") or 0),
+                    orders=int(session.get("open_orders_count") or 0),
+                    trades=int(session.get("trade_count") or 0),
+                    strategy=str(session.get("strategy") or "Trend Following"),
+                )
+            )
+            tabs.addTab(viewer, label)
+            if str(session.get("session_id") or "").strip() == active_session_id:
+                selected_index = index + 1
+        tabs.setCurrentIndex(selected_index)
 
     def _current_chart_symbol(self):
         chart = self._current_chart_widget()
@@ -5952,12 +6478,15 @@ class Terminal(QMainWindow):
         window: Any = self.detached_tool_windows.get(key)
 
         if window is not None:
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
-            return window
+            if self._is_qt_object_alive(window):
+                window.showNormal()
+                window.raise_()
+                window.activateWindow()
+                return window
+            self.detached_tool_windows.pop(key, None)
 
-        window = QMainWindow(self)
+        parent = self if isinstance(self, QWidget) else None
+        window = QMainWindow(parent)
         window.setWindowFlag(Qt.WindowType.Window, True)
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         window.setWindowTitle(title)
@@ -6776,8 +7305,6 @@ class Terminal(QMainWindow):
         """
 
     def _trader_tv_web_view_class(self):
-        if str(os.getenv("SOPOTEK_DISABLE_WEBENGINE") or "").strip().lower() in {"1", "true", "yes", "on"}:
-            return None
         try:
             from PySide6.QtWebEngineWidgets import QWebEngineView  # type: ignore
         except Exception:
@@ -7173,9 +7700,11 @@ class Terminal(QMainWindow):
     def _populate_closed_journal_table(self, table, rows):
         if table is None or not self._is_qt_object_alive(table):
             return
+        if table.columnCount() < 11:
+            table.setColumnCount(11)
         table.setRowCount(len(rows or []))
         for row_index, row in enumerate(rows or []):
-            outcome_text = str(row.get("outcome") or self._derived_trade_outcome(row) or "").strip()
+            outcome = str(row.get("outcome") or self._derived_trade_outcome(row) or "").strip()
             values = [
                 row.get("timestamp", ""),
                 row.get("symbol", ""),
@@ -7185,7 +7714,7 @@ class Terminal(QMainWindow):
                 row.get("size", ""),
                 row.get("order_type", ""),
                 row.get("status", ""),
-                outcome_text,
+                outcome,
                 row.get("order_id", ""),
                 row.get("pnl", ""),
             ]
@@ -7199,8 +7728,8 @@ class Terminal(QMainWindow):
                 tooltip_lines.append(f"Reason: {row.get('reason')}")
             if row.get("setup"):
                 tooltip_lines.append(f"Setup: {row.get('setup')}")
-            if outcome_text:
-                tooltip_lines.append(f"Outcome: {outcome_text}")
+            if outcome:
+                tooltip_lines.append(f"Outcome: {outcome}")
             if row.get("lessons"):
                 tooltip_lines.append(f"Lessons: {row.get('lessons')}")
             if self._safe_float(row.get("stop_loss")) is not None:
@@ -7944,16 +8473,36 @@ class Terminal(QMainWindow):
         return "".join(lines)
 
     def _derived_trade_outcome(self, trade):
+        def _local_safe_float(value):
+            parser = getattr(self, "_safe_float", None)
+            if callable(parser):
+                return parser(value)
+            if value in (None, "", "-"):
+                return None
+            try:
+                return float(value)
+            except Exception:
+                return None
+
         if not isinstance(trade, dict):
             return ""
-        return str(
-            derive_trade_outcome(
-                outcome=trade.get("outcome"),
-                pnl=trade.get("pnl"),
-                status=trade.get("status"),
-            )
-            or ""
-        ).strip()
+        explicit = str(trade.get("outcome") or "").strip()
+        if explicit:
+            return explicit
+        pnl = _local_safe_float(trade.get("pnl"))
+        status = str(trade.get("status") or "").strip().lower()
+        if pnl is not None:
+            if pnl > 0:
+                return "Win"
+            if pnl < 0:
+                return "Loss"
+            if status in {"filled", "closed"}:
+                return "Flat"
+        if status in {"rejected", "failed"}:
+            return "Rejected"
+        if status in {"canceled", "cancelled", "expired"}:
+            return "Canceled"
+        return status.title() if status else ""
 
     def _set_text_edit_value(self, widget, value):
         if widget is None:
@@ -9249,6 +9798,8 @@ class Terminal(QMainWindow):
             self._set_status_value("Pipeline", getattr(controller, "get_pipeline_status_summary", lambda: "Idle")())
 
             self._set_status_value("Timeframe", self.current_timeframe)
+            self._refresh_session_selector()
+            self._refresh_session_tabs()
             self._update_session_badge()
             self._update_license_badge()
             self._update_kill_switch_button()
@@ -14420,9 +14971,51 @@ def _hotfix_wrap_tab_in_scroll_area(content, minimum_width=0):
     return scroll
 
 
+def _hotfix_missing_database_driver_name(error):
+    name = str(getattr(error, "name", "") or "").strip().lower()
+    if name:
+        return name
+
+    for value in getattr(error, "args", ()) or ():
+        text = str(value or "").strip().lower()
+        if "pymysql" in text:
+            return "pymysql"
+        if "pymsql" in text:
+            return "pymsql"
+    return ""
+
+
+def _hotfix_apply_storage_settings(self, database_mode, database_url, persist):
+    if not hasattr(self.controller, "configure_storage_database"):
+        return ""
+
+    try:
+        self.controller.configure_storage_database(
+            database_mode=database_mode,
+            database_url=database_url,
+            persist=persist,
+            raise_on_error=bool(persist),
+        )
+        return ""
+    except ModuleNotFoundError as exc:
+        missing_driver = _hotfix_missing_database_driver_name(exc)
+        if database_mode == "remote" and missing_driver in {"pymysql", "pymsql"}:
+            self.controller.configure_storage_database(
+                database_mode="local",
+                database_url="",
+                persist=persist,
+                raise_on_error=False,
+            )
+            return (
+                "Remote MySQL storage requires PyMySQL, so Sopotek kept storage on Local SQLite. "
+                "Install PyMySQL or switch the storage backend back to Local SQLite."
+            )
+        raise
+
+
 def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False):
     if not isinstance(values, dict):
-        return
+        return ""
 
     timeframe = values.get("timeframe", getattr(self, "current_timeframe", "1h"))
     order_type = values.get("order_type", getattr(self, "order_type", "limit"))
@@ -14475,13 +15068,7 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
         )
         or forex_candle_price_component
     ).strip().lower()
-    if hasattr(self.controller, "configure_storage_database"):
-        self.controller.configure_storage_database(
-            database_mode=database_mode,
-            database_url=database_url,
-            persist=persist,
-            raise_on_error=bool(persist),
-        )
+    storage_notice = _hotfix_apply_storage_settings(self, database_mode, database_url, persist)
     self.controller.limit = history_limit
     self.controller.initial_capital = initial_capital
     backtest_window = getattr(self, "detached_tool_windows", {}).get("backtesting_workspace")
@@ -14684,6 +15271,8 @@ def _hotfix_apply_settings_values(self, values, persist=True, reload_chart=False
         self.settings.setValue("integrations/news_draw_on_chart", bool(values.get("news_draw_on_chart", getattr(self.controller, "news_draw_on_chart", True))))
         self.settings.setValue("integrations/news_feed_url", values.get("news_feed_url", getattr(self.controller, "news_feed_url", "")))
         self._save_detached_chart_layouts()
+
+    return storage_notice
 
 
 def _hotfix_show_settings_window(self, initial_tab=None):
@@ -15231,13 +15820,13 @@ def _hotfix_apply_settings_window(self, window=None):
         if not values:
             return
 
-        _hotfix_apply_settings_values(self, values, persist=True, reload_chart=True)
+        storage_notice = _hotfix_apply_settings_values(self, values, persist=True, reload_chart=True)
 
         active_window = window or self.detached_tool_windows.get("application_settings")
         summary = getattr(active_window, "_settings_summary", None)
         if summary is not None:
             summary.setText(
-                "Saved settings. "
+                ("Saved settings. " + storage_notice + " ") if storage_notice else "Saved settings. "
                 f"Storage: {getattr(self.controller, 'current_database_label', lambda: values.get('database_mode', 'local'))()} | "
                 f"Risk profile: {values.get('risk_profile_name', 'Custom')} | "
                 f"Closeout guard: {'enabled' if values.get('margin_closeout_guard_enabled') else 'disabled'} @ {float(values.get('max_margin_closeout_pct', 0.50) or 0.50):.2%} | "
@@ -15254,6 +15843,8 @@ def _hotfix_apply_settings_window(self, window=None):
                 f"OpenAI model: {values.get('openai_model') or 'gpt-5-mini'}"
             )
 
+        if storage_notice:
+            self.system_console.log(storage_notice, "WARN")
         self.system_console.log("Application settings updated successfully.", "INFO")
 
     except Exception as e:
