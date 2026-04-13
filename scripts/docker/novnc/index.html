@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en" data-resize="__NOVNC_RESIZE__" data-encrypt="__NOVNC_ENCRYPT__" data-reconnect="__NOVNC_RECONNECT__" data-show-dot="__NOVNC_SHOW_DOT__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sopotek Browser UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: rgba(12, 25, 44, 0.92);
+      --panel-border: rgba(98, 125, 166, 0.32);
+      --text: #ecf4ff;
+      --muted: #9fb5d1;
+      --accent: #2a7fff;
+      --accent-2: #53d2b0;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top, rgba(42, 127, 255, 0.18), transparent 34%),
+        radial-gradient(circle at bottom right, rgba(83, 210, 176, 0.14), transparent 26%),
+        linear-gradient(180deg, #07111f 0%, #091523 45%, #050b14 100%);
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .hero {
+      padding: 24px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .hero-card {
+      width: min(960px, calc(100vw - 32px));
+      padding: 24px;
+      border-radius: 20px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .actions {
+      margin-top: 18px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    button,
+    a.button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+    }
+
+    button.secondary,
+    a.button.secondary {
+      background: rgba(159, 181, 209, 0.12);
+      color: var(--text);
+      border: 1px solid rgba(159, 181, 209, 0.18);
+    }
+
+    button:hover,
+    a.button:hover {
+      transform: translateY(-1px);
+      opacity: 0.98;
+    }
+
+    .notes {
+      margin-top: 16px;
+      display: grid;
+      gap: 6px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .viewer {
+      padding: 0 16px 16px;
+      display: none;
+      min-height: 0;
+    }
+
+    .viewer.active {
+      display: block;
+    }
+
+    iframe {
+      width: 100%;
+      height: calc(100vh - 220px);
+      border: 0;
+      border-radius: 18px;
+      background: #02060c;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.32);
+    }
+
+    @media (max-width: 720px) {
+      .hero {
+        padding: 16px;
+      }
+
+      .hero-card {
+        padding: 18px;
+      }
+
+      iframe {
+        height: calc(100vh - 260px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-card">
+        <h1>Sopotek Browser Desktop</h1>
+        <p>Launch the 1600x900 virtual desktop in the browser, or switch straight into fullscreen for a roomier trading workspace.</p>
+        <div class="actions">
+          <button type="button" id="launch-standard">Open Desktop</button>
+          <button type="button" class="secondary" id="launch-fullscreen">Launch Fullscreen</button>
+          <a class="button secondary" id="direct-link" href="vnc.html">Open Raw noVNC</a>
+        </div>
+        <div class="notes">
+          <span id="connection-mode">Connection mode: loading...</span>
+          <span>Clipboard bridge is enabled. If browser paste shortcuts are blocked, use the noVNC clipboard drawer.</span>
+          <span>When resize mode is <strong id="resize-mode">off</strong>, browser scrollbars preserve the full desktop instead of shrinking the UI.</span>
+        </div>
+      </div>
+    </section>
+    <section class="viewer" id="viewer-shell">
+      <iframe id="viewer" title="Sopotek noVNC viewer" allow="fullscreen clipboard-read clipboard-write"></iframe>
+    </section>
+  </div>
+  <script>
+    (function () {
+      const root = document.documentElement;
+      const resizeMode = root.dataset.resize || "off";
+      const encrypt = root.dataset.encrypt === "1";
+      const reconnect = root.dataset.reconnect || "1";
+      const showDot = root.dataset.showDot || "1";
+      const query = new URLSearchParams({
+        autoconnect: "1",
+        reconnect,
+        resize: resizeMode,
+        show_dot: showDot,
+      });
+
+      if (encrypt) {
+        query.set("encrypt", "1");
+      }
+
+      const target = `vnc.html?${query.toString()}`;
+      const iframe = document.getElementById("viewer");
+      const viewerShell = document.getElementById("viewer-shell");
+      const directLink = document.getElementById("direct-link");
+      const resizeLabel = document.getElementById("resize-mode");
+      const connectionMode = document.getElementById("connection-mode");
+
+      resizeLabel.textContent = resizeMode;
+      directLink.href = target;
+      connectionMode.textContent = `Connection mode: ${encrypt ? "HTTPS/WSS" : "HTTP/WS"}`;
+
+      async function launch(fullscreen) {
+        iframe.src = target;
+        viewerShell.classList.add("active");
+        if (fullscreen && document.documentElement.requestFullscreen) {
+          try {
+            await document.documentElement.requestFullscreen();
+          } catch (_error) {
+            /* Browser fullscreen can be denied; the desktop still launches. */
+          }
+        }
+      }
+
+      document.getElementById("launch-standard").addEventListener("click", function () {
+        void launch(false);
+      });
+
+      document.getElementById("launch-fullscreen").addEventListener("click", function () {
+        void launch(true);
+      });
+    }());
+  </script>
+</body>
+</html>

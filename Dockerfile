@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon-x11-0 \
     libxtst6 \
     novnc \
+    openssl \
     websockify \
     x11-utils \
     x11vnc \
@@ -60,7 +61,7 @@ COPY scripts ./scripts
 COPY src ./src
 
 RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install ".[ui,brokers,ml]"
+    && python -m pip install ".[ui,brokers,ml]" "psycopg[binary]>=3.2"
 
 RUN sed -i 's/\r$//' /app/scripts/docker/start_http_ui.sh \
     && chmod +x /app/scripts/docker/start_http_ui.sh

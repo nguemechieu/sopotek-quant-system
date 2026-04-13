@@ -27,6 +27,8 @@ class ReportGenerator:
                 "total_trades": 0,
                 "closed_trades": 0,
                 "total_profit": 0.0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
                 "win_rate": 0.0,
                 "avg_profit": 0.0,
                 "sharpe_ratio": 0.0,
@@ -37,6 +39,7 @@ class ReportGenerator:
                 "slippage_cost": 0.0,
                 "max_drawdown": 0.0,
                 "final_equity": float(equity_curve[-1]) if equity_curve else 0.0,
+                "net_return_pct": 0.0,
             }
 
         pnl = pd.to_numeric(trades_df.get("pnl", pd.Series(dtype=float)), errors="coerce").dropna()
@@ -66,6 +69,8 @@ class ReportGenerator:
             "total_trades": int(len(trades_df)),
             "closed_trades": int(closed_trade_count),
             "total_profit": total_profit,
+            "gross_profit": gross_profit,
+            "gross_loss": -gross_loss,
             "win_rate": win_rate,
             "avg_profit": avg_profit,
             "sharpe_ratio": sharpe,
@@ -76,6 +81,7 @@ class ReportGenerator:
             "slippage_cost": slippage_cost,
             "max_drawdown": max_drawdown,
             "final_equity": final_equity,
+            "net_return_pct": ((final_equity - float(equity_curve[0])) / float(equity_curve[0]) * 100.0) if equity_curve and float(equity_curve[0]) else 0.0,
         }
 
     def _max_drawdown(self, equity_curve):

@@ -53,6 +53,8 @@ def test_show_backtest_window_builds_workspace_and_wires_buttons():
     assert returned is window
     assert window._backtest_history_limit.value() == 2500
     assert window._backtest_tabs.count() == 4
+    assert "Profit Factor" in window._backtest_metric_labels
+    assert "Closed Trades" in window._backtest_metric_labels
     assert events["selectors"] == 1
     assert events["refreshes"] == 1
     assert events["start"] == 1
@@ -79,7 +81,19 @@ def test_refresh_backtest_window_renders_results_and_metrics():
         _backtest_summary=QLabel(),
         _backtest_results=QTableWidget(),
         _backtest_setting_labels={name: QLabel() for name in ["Expert", "Symbol", "Period", "Model", "Spread", "Initial Deposit", "Target Bars", "Bars", "Range"]},
-        _backtest_metric_labels={name: QLabel() for name in ["Total Net Profit", "Trades", "Win Rate", "Max Drawdown", "Final Equity"]},
+        _backtest_metric_labels={
+            name: QLabel()
+            for name in [
+                "Total Net Profit",
+                "Profit Factor",
+                "Sharpe Ratio",
+                "Trades",
+                "Closed Trades",
+                "Win Rate",
+                "Max Drawdown",
+                "Final Equity",
+            ]
+        },
         _backtest_graph_curve=_Curve(),
         _backtest_graph_animation_curve=_Curve(),
         _backtest_report=QTextEdit(),
@@ -103,7 +117,16 @@ def test_refresh_backtest_window_renders_results_and_metrics():
         _backtest_stop_requested=False,
         _backtest_history_task=None,
         results=pd.DataFrame([{"timestamp": 1, "symbol": "EUR/USD", "side": "BUY", "type": "ENTRY", "price": 1.1, "amount": 1, "pnl": 10.0, "equity": 5010, "reason": "entry"}]),
-        backtest_report={"total_profit": 10.0, "total_trades": 1, "win_rate": 1.0, "max_drawdown": 2.5, "final_equity": 5010.0},
+        backtest_report={
+            "total_profit": 10.0,
+            "profit_factor": 2.0,
+            "sharpe_ratio": 1.5,
+            "total_trades": 1,
+            "closed_trades": 1,
+            "win_rate": 1.0,
+            "max_drawdown": 2.5,
+            "final_equity": 5010.0,
+        },
         backtest_engine=SimpleNamespace(equity_curve=[5000, 5010]),
         _format_backtest_range=lambda data: "2026-01-01 -> 2026-01-10",
         _backtest_requested_range_text=lambda window=None, context=None: "2026-01-01 -> 2026-01-10",
@@ -121,7 +144,10 @@ def test_refresh_backtest_window_renders_results_and_metrics():
     assert window._backtest_status.text() == "Ready"
     assert "Expert: Trend Following" in window._backtest_summary.text()
     assert window._backtest_metric_labels["Total Net Profit"].text() == "10.00"
+    assert window._backtest_metric_labels["Profit Factor"].text() == "2.00"
+    assert window._backtest_metric_labels["Sharpe Ratio"].text() == "1.50"
     assert window._backtest_metric_labels["Trades"].text() == "1"
+    assert window._backtest_metric_labels["Closed Trades"].text() == "1"
     assert window._backtest_metric_labels["Win Rate"].text() == "100.00%"
     assert window._backtest_report.toPlainText() == "Backtest summary"
     assert rows and rows[0][1] is fake.results

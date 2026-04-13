@@ -154,7 +154,10 @@ def show_backtest_window(terminal):
 
         metric_names = [
             "Total Net Profit",
+            "Profit Factor",
+            "Sharpe Ratio",
             "Trades",
+            "Closed Trades",
             "Win Rate",
             "Max Drawdown",
             "Final Equity",
@@ -165,8 +168,10 @@ def show_backtest_window(terminal):
             title.setStyleSheet("color: #8fa3bf; font-weight: 700;")
             value = QLabel("-")
             value.setStyleSheet("color: #f5fbff; font-weight: 700; font-size: 16px;")
-            metrics_layout.addWidget(title, 0, index)
-            metrics_layout.addWidget(value, 1, index)
+            row = (index // 4) * 2
+            column = index % 4
+            metrics_layout.addWidget(title, row, column)
+            metrics_layout.addWidget(value, row + 1, column)
             metric_labels[name] = value
         layout.addWidget(metrics_frame)
 
@@ -361,11 +366,8 @@ def refresh_backtest_window(terminal, window=None, message=None):
             terminal._tick_backtest_graph_animation(window)
         else:
             terminal._stop_backtest_graph_animation(window, clear=True)
-        metrics["Total Net Profit"].setText("-")
-        metrics["Trades"].setText("-")
-        metrics["Win Rate"].setText("-")
-        metrics["Max Drawdown"].setText("-")
-        metrics["Final Equity"].setText("-")
+        for label in metrics.values():
+            label.setText("-")
         report_view.setPlainText("No backtest results yet.")
         journal_view.setPlainText("\n".join(getattr(terminal, "_backtest_journal_lines", []) or []))
         journal_view.moveCursor(QTextCursor.MoveOperation.End)
@@ -382,7 +384,10 @@ def refresh_backtest_window(terminal, window=None, message=None):
             ).generate()
 
         metrics["Total Net Profit"].setText(f"{float(report.get('total_profit', 0.0) or 0.0):.2f}")
+        metrics["Profit Factor"].setText(f"{float(report.get('profit_factor', 0.0) or 0.0):.2f}")
+        metrics["Sharpe Ratio"].setText(f"{float(report.get('sharpe_ratio', 0.0) or 0.0):.2f}")
         metrics["Trades"].setText(str(int(report.get('total_trades', 0) or 0)))
+        metrics["Closed Trades"].setText(str(int(report.get('closed_trades', 0) or 0)))
         metrics["Win Rate"].setText(f"{float(report.get('win_rate', 0.0) or 0.0) * 100.0:.2f}%")
         metrics["Max Drawdown"].setText(f"{float(report.get('max_drawdown', 0.0) or 0.0):.2f}")
         metrics["Final Equity"].setText(f"{float(report.get('final_equity', initial_deposit) or initial_deposit):.2f}")

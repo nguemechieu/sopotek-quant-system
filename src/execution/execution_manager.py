@@ -4,6 +4,7 @@ import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 
+from broker.broker_errors import BrokerOperationError
 from event_bus.event import Event
 from event_bus.event_types import EventType
 from models.instrument import Instrument
@@ -93,6 +94,56 @@ class ExecutionManager:
 
     def last_skip_reason(self, symbol):
         return self._symbol_skip_reasons.get(symbol)
+
+    def _classify_execution_exception(self, exc):
+        if isinstance(exc, BrokerOperationError):
+            category = str(exc.category or "broker_error").strip().lower()
+            defaults = {
+                "rate_limit": 300.0,
+                "network_error": 120.0,
+                "insufficient_funds": 120.0,
+                "invalid_order": 180.0,
+                "unsupported_symbol": 300.0,
+                "authentication_error": 600.0,
+                "broker_error": 0.0,
+            }
+            rejected_categories = {
+                "insufficient_funds",
+                "invalid_order",
+                "unsupported_symbol",
+                "authentication_error",
+            }
+            return {
+                "category": category,
+                "reason": str(exc),
+                "raw_message": getattr(exc, "raw_message", str(exc)),
+                "cooldown_seconds": float(exc.cooldown_seconds or defaults.get(category, 0.0) or 0.0),
+                "rejected": bool(getattr(exc, "rejection", False) or category in rejected_categories),
+            }
+
+        message = str(exc or "")
+        lowered = message.lower()
+
+        for tokens, category, cooldown_seconds, rejected in (
+            (("too many requests", "429"), "rate_limit", 300.0, False),
+            (("market is closed", "min_notional", "insufficient balance"), "invalid_order", 300.0, False),
+            (
+                ("insufficient margin", "insufficient funds", "order rejected", "rejected", "rejectreason"),
+                "invalid_order",
+                120.0,
+                True,
+            ),
+        ):
+            if any(token in lowered for token in tokens):
+                return {
+                    "category": category,
+                    "reason": message,
+                    "raw_message": message,
+                    "cooldown_seconds": cooldown_seconds,
+                    "rejected": rejected,
+                }
+
+        return None
 
     async def _fetch_reference_price(self, symbol, side, requested_price=None):
         if requested_price is not None:
@@ -422,6 +473,7 @@ class ExecutionManager:
                 "requested_amount_units",
                 submitted_order.get("requested_amount_units"),
             ),
+            "error_category": execution.get("error_category", submitted_order.get("error_category")),
             "deterministic_amount_units": execution.get(
                 "deterministic_amount_units",
                 submitted_order.get("deterministic_amount_units"),
@@ -899,40 +951,36 @@ class ExecutionManager:
             try:
                 execution = await self.router.route(prepared_order)
             except Exception as exc:
-                message = str(exc)
-                lowered = message.lower()
-                if any(token in lowered for token in ("too many requests", "429")):
-                    self._set_cooldown(symbol, 300, message)
+                classification = self._classify_execution_exception(exc)
+                if classification is None:
+                    raise
+
+                reason = classification["reason"]
+                cooldown_seconds = float(classification.get("cooldown_seconds") or 0.0)
+                if cooldown_seconds > 0:
+                    self._set_cooldown(symbol, cooldown_seconds, reason)
+
+                if not classification.get("rejected"):
                     return None
-                if any(token in lowered for token in ("market is closed", "min_notional", "insufficient balance")):
-                    self._set_cooldown(symbol, 300, message)
-                    return None
-                if any(
-                    token in lowered
-                    for token in (
-                        "insufficient margin",
-                        "insufficient funds",
-                        "order rejected",
-                        "rejected",
-                        "rejectreason",
-                    )
-                ):
-                    prepared_order["timestamp"] = datetime.now(timezone.utc).isoformat()
-                    rejected_execution = {
-                        "symbol": symbol,
-                        "side": normalized_order["side"],
-                        "source": prepared_order.get("source", normalized_order.get("source", "bot")),
-                        "amount": prepared_order.get("amount"),
-                        "type": prepared_order.get("type", order_type),
-                        "price": prepared_order.get("price"),
-                        "status": "rejected",
-                        "reason": message,
-                        "raw": {"error": message},
-                    }
-                    self._set_cooldown(symbol, 120, message)
-                    await self._handle_order_update(rejected_execution, prepared_order, allow_tracking=False)
-                    return rejected_execution
-                raise
+
+                prepared_order["timestamp"] = datetime.now(timezone.utc).isoformat()
+                rejected_execution = {
+                    "symbol": symbol,
+                    "side": normalized_order["side"],
+                    "source": prepared_order.get("source", normalized_order.get("source", "bot")),
+                    "amount": prepared_order.get("amount"),
+                    "type": prepared_order.get("type", order_type),
+                    "price": prepared_order.get("price"),
+                    "status": "rejected",
+                    "reason": reason,
+                    "error_category": classification.get("category"),
+                    "raw": {
+                        "error": classification.get("raw_message", reason),
+                        "category": classification.get("category"),
+                    },
+                }
+                await self._handle_order_update(rejected_execution, prepared_order, allow_tracking=False)
+                return rejected_execution
             prepared_order["timestamp"] = datetime.now(timezone.utc).isoformat()
             if isinstance(execution, dict):
                 execution.setdefault("source", prepared_order.get("source", normalized_order.get("source", "bot")))
