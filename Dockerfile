@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon-x11-0 \
     libxtst6 \
     novnc \
+    openssl \
     websockify \
     x11-utils \
     x11vnc \

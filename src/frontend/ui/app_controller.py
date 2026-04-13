@@ -2443,6 +2443,7 @@ class AppController(QMainWindow):
                     raise RuntimeError("Broker configuration missing")
 
                 self.dashboard.show_loading()
+                await asyncio.sleep(0)
                 self.config = config
                 broker_mode = str(getattr(config.broker, "mode", "") or "").strip().lower()
                 if broker_mode == "live" and not self.license_allows("live_trading"):
@@ -3314,6 +3315,7 @@ class AppController(QMainWindow):
             activate_window = getattr(terminal, "activateWindow", None)
             if callable(activate_window):
                 activate_window()
+            await asyncio.sleep(0)
             self._fit_window_to_available_screen()
             QTimer.singleShot(0, self._fit_window_to_available_screen)
             terminal.logout_requested.connect(self._on_logout_requested)
@@ -3339,7 +3341,9 @@ class AppController(QMainWindow):
                 return
             if getattr(terminal, "_ui_shutting_down", False):
                 return
-            if hasattr(terminal, "load_persisted_runtime_data"):
+            if hasattr(terminal, "load_initial_runtime_data"):
+                await terminal.load_initial_runtime_data()
+            elif hasattr(terminal, "load_persisted_runtime_data"):
                 await terminal.load_persisted_runtime_data()
         finally:
             if getattr(self, "_terminal_runtime_restore_task", None) is current_task:

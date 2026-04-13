@@ -99,6 +99,7 @@ from frontend.ui.actions.window_actions import (
     sync_logs_window,
 )
 from frontend.ui.i18n import apply_runtime_translations, iter_supported_languages
+from frontend.ui.loading_overlay import LoadingOverlay
 from frontend.ui.panels.system_panels import (
     AI_MONITOR_HEADERS,
     create_ai_signal_panel,
@@ -129,11 +130,18 @@ from frontend.ui.panels.performance_updates import (
     refresh_performance_views,
 )
 from frontend.ui.panels.runtime_updates import (
+    load_initial_terminal_data,
     load_persisted_runtime_data,
+    refresh_assets_async,
     refresh_open_orders_async,
+    refresh_order_history_async,
     refresh_positions_async,
+    refresh_trade_history_async,
+    schedule_assets_refresh,
     schedule_open_orders_refresh,
+    schedule_order_history_refresh,
     schedule_positions_refresh,
+    schedule_trade_history_refresh,
 )
 from frontend.ui.panels.trading_panels import (
     create_open_orders_panel,
@@ -141,16 +149,22 @@ from frontend.ui.panels.trading_panels import (
     create_trade_log_panel,
 )
 from frontend.ui.panels.trading_updates import (
+    apply_assets_filter,
     apply_open_orders_filter,
+    apply_order_history_filter,
     apply_positions_filter,
     apply_trade_log_filter,
+    apply_trade_history_filter,
     format_trade_log_value,
     format_trade_source_label,
     normalize_open_order_entry,
     normalize_position_entry,
     normalize_trade_log_entry,
+    populate_assets_table,
     populate_open_orders_table,
+    populate_order_history_table,
     populate_positions_table,
+    populate_trade_history_table,
     trade_log_row_for_entry,
     update_trade_log,
 )
@@ -517,8 +531,11 @@ class Terminal(QMainWindow):
         self._status_value_cache = {}
         self._session_selector_signature = None
         self._session_tabs_signature = None
+        self._assets_table_signature = None
         self._positions_table_signature = None
         self._open_orders_table_signature = None
+        self._order_history_table_signature = None
+        self._trade_history_table_signature = None
         self._risk_heatmap_signature = None
 
         self.settings = QSettings("Sopotek", "TradingPlatform")
@@ -560,11 +577,21 @@ class Terminal(QMainWindow):
         self.show_bid_ask_lines = True
         self.show_chart_volume = _setting_bool(self.settings.value("terminal/show_chart_volume", False), False)
         self._ui_shutting_down = False
+        self._assets_refresh_task = None
         self._positions_refresh_task = None
         self._open_orders_refresh_task = None
+        self._order_history_refresh_task = None
+        self._trade_history_refresh_task = None
         self._broker_status_refresh_task = None
+        self._initial_runtime_load_task = None
+        self._latest_assets_snapshot = {}
         self._latest_positions_snapshot = []
         self._latest_open_orders_snapshot = []
+        self._latest_order_history_snapshot = []
+        self._latest_trade_history_snapshot = []
+        self._last_assets_refresh_at = 0.0
+        self._last_order_history_refresh_at = 0.0
+        self._last_trade_history_refresh_at = 0.0
         self._latest_broker_status_snapshot = {"status": "disconnected", "summary": "Disconnected"}
         self._last_broker_status_refresh_at = 0.0
         self._last_ai_table_refresh_at = 0.0
@@ -588,6 +615,7 @@ class Terminal(QMainWindow):
         self._setup_core()
         self._setup_ui()
         self._setup_panels()
+        self._setup_loading_overlay()
         self._restore_settings()
         self._connect_signals()
         self._setup_spinner()
@@ -4406,8 +4434,21 @@ class Terminal(QMainWindow):
                 normalized_orders.append(normalized)
         return normalized_orders
 
+    def _assets_snapshot(self):
+        latest = dict(getattr(self, "_latest_assets_snapshot", {}) or {})
+        if latest:
+            return latest
+        controller = getattr(self, "controller", None)
+        return dict(getattr(controller, "balances", {}) or {})
+
     def _runtime_metrics_snapshot(self):
         return build_runtime_metrics_snapshot(self)
+
+    def _populate_assets_table(self, balances):
+        populate_assets_table(self, balances)
+
+    def _apply_assets_filter(self):
+        apply_assets_filter(self)
 
     def _populate_positions_table(self, positions):
         populate_positions_table(self, positions)
@@ -4526,11 +4567,41 @@ class Terminal(QMainWindow):
     def _apply_open_orders_filter(self):
         apply_open_orders_filter(self)
 
+    def _populate_order_history_table(self, orders):
+        populate_order_history_table(self, orders)
+
+    def _apply_order_history_filter(self):
+        apply_order_history_filter(self)
+
+    def _populate_trade_history_table(self, trades):
+        populate_trade_history_table(self, trades)
+
+    def _apply_trade_history_filter(self):
+        apply_trade_history_filter(self)
+
     async def _refresh_positions_async(self):
         await refresh_positions_async(self)
 
     def _schedule_positions_refresh(self):
         schedule_positions_refresh(self)
+
+    async def _refresh_assets_async(self):
+        await refresh_assets_async(self)
+
+    def _schedule_assets_refresh(self):
+        schedule_assets_refresh(self)
+
+    async def _refresh_order_history_async(self):
+        await refresh_order_history_async(self)
+
+    def _schedule_order_history_refresh(self):
+        schedule_order_history_refresh(self)
+
+    async def _refresh_trade_history_async(self):
+        await refresh_trade_history_async(self)
+
+    def _schedule_trade_history_refresh(self):
+        schedule_trade_history_refresh(self)
 
     def _resolve_position_analysis_metric(self, account, balances, *keys):
         candidates = []
@@ -5467,6 +5538,22 @@ class Terminal(QMainWindow):
 
     def _update_trade_log(self, trade):
         update_trade_log(self, trade)
+        normalized = self._normalize_trade_log_entry(trade)
+        if normalized is None:
+            return
+        history_rows = [
+            dict(item)
+            for item in list(getattr(self, "_latest_trade_history_snapshot", []) or [])
+            if isinstance(item, dict)
+        ]
+        order_id = str(normalized.get("order_id") or "").strip()
+        if order_id:
+            history_rows = [
+                item for item in history_rows if str(item.get("order_id") or "").strip() != order_id
+            ]
+        history_rows.insert(0, dict(normalized))
+        self._latest_trade_history_snapshot = history_rows[: max(1, int(self.MAX_LOG_ROWS or 200))]
+        self._populate_trade_history_table(self._latest_trade_history_snapshot)
 
     def _apply_trade_log_filter(self):
         apply_trade_log_filter(self)
@@ -7008,6 +7095,43 @@ class Terminal(QMainWindow):
 
         self.spinner_timer.start(500)
 
+    def _setup_loading_overlay(self):
+        self.loading_overlay = LoadingOverlay(self, title="Loading trading workspace...")
+
+    def _set_workspace_loading_state(self, title=None, detail=None, *, visible=True):
+        overlay = getattr(self, "loading_overlay", None)
+        if overlay is None:
+            return
+        if not visible:
+            overlay.clear_loading()
+            return
+        resolved_title = str(title or "Loading trading workspace...").strip() or "Loading trading workspace..."
+        overlay.set_loading(resolved_title, detail)
+
+    async def _load_active_chart_bootstrap_async(self):
+        chart = self._current_chart_widget()
+        if chart is None:
+            return None
+        return await self._request_chart_data_for_widget(
+            chart,
+            limit=self._history_request_limit(),
+        )
+
+    async def load_initial_runtime_data(self):
+        task = getattr(self, "_initial_runtime_load_task", None)
+        if task is not None and not task.done():
+            await task
+            return
+
+        async def _runner():
+            await load_initial_terminal_data(self)
+
+        self._initial_runtime_load_task = asyncio.get_event_loop().create_task(_runner())
+        try:
+            await self._initial_runtime_load_task
+        finally:
+            self._initial_runtime_load_task = None
+
     def _update_symbols(self, exchange, symbols):
         normalized_symbols = [str(symbol or "").strip().upper() for symbol in symbols or [] if str(symbol or "").strip()]
         supported_symbols = set(normalized_symbols)
@@ -7414,19 +7538,19 @@ class Terminal(QMainWindow):
         total_profit = float(report.get("total_profit", 0.0) or 0.0)
         total_trades = int(report.get("total_trades", 0) or 0)
         closed_trades = int(report.get("closed_trades", 0) or 0)
+        gross_profit = float(report.get("gross_profit", 0.0) or 0.0)
+        gross_loss = float(report.get("gross_loss", 0.0) or 0.0)
         win_rate = float(report.get("win_rate", 0.0) or 0.0) * 100.0
         avg_profit = float(report.get("avg_profit", 0.0) or 0.0)
+        sharpe_ratio = float(report.get("sharpe_ratio", 0.0) or 0.0)
+        sortino_ratio = float(report.get("sortino_ratio", 0.0) or 0.0)
+        profit_factor = float(report.get("profit_factor", 0.0) or 0.0)
+        expectancy = float(report.get("expectancy", 0.0) or 0.0)
+        commission_paid = float(report.get("commission_paid", 0.0) or 0.0)
+        slippage_cost = float(report.get("slippage_cost", 0.0) or 0.0)
         max_drawdown = float(report.get("max_drawdown", 0.0) or 0.0)
         final_equity = float(report.get("final_equity", initial_deposit) or initial_deposit)
-
-        gross_profit = 0.0
-        gross_loss = 0.0
-        if trades_df is not None and not getattr(trades_df, "empty", True) and "pnl" in trades_df:
-            pnl_series = trades_df["pnl"].fillna(0).astype(float)
-            gross_profit = float(pnl_series[pnl_series > 0].sum())
-            gross_loss = float(pnl_series[pnl_series < 0].sum())
-
-        profit_factor = gross_profit / abs(gross_loss) if gross_loss < 0 else (gross_profit if gross_profit > 0 else 0.0)
+        net_return_pct = float(report.get("net_return_pct", 0.0) or 0.0)
         bars = len(equity_curve) if equity_curve else candle_count
 
         lines = [
@@ -7448,11 +7572,17 @@ class Terminal(QMainWindow):
             f"Gross Loss: {gross_loss:.2f}",
             f"Profit Factor: {profit_factor:.2f}",
             f"Expected Payoff: {avg_profit:.2f}",
+            f"Expectancy: {expectancy:.2f}",
+            f"Sharpe Ratio: {sharpe_ratio:.2f}",
+            f"Sortino Ratio: {sortino_ratio:.2f}",
+            f"Commission Paid: {commission_paid:.2f}",
+            f"Slippage Cost: {slippage_cost:.2f}",
             f"Max Drawdown: {max_drawdown:.2f}",
             f"Total Trades: {total_trades}",
             f"Closed Trades: {closed_trades}",
             f"Win Rate: {win_rate:.2f}%",
             f"Final Equity: {final_equity:.2f}",
+            f"Net Return: {net_return_pct:.2f}%",
         ]
         return "\n".join(lines)
 
@@ -10844,11 +10974,15 @@ class Terminal(QMainWindow):
             self._update_kill_switch_button()
 
             self._update_risk_heatmap()
+            self._populate_assets_table(balance)
             self._populate_positions_table(positions)
             self._populate_open_orders_table(open_orders)
             self._schedule_broker_status_refresh()
+            self._schedule_assets_refresh()
             self._schedule_positions_refresh()
             self._schedule_open_orders_refresh()
+            self._schedule_order_history_refresh()
+            self._schedule_trade_history_refresh()
             self._refresh_strategy_comparison_panel()
             self._refresh_live_agent_timeline_panel()
 
@@ -17091,6 +17225,11 @@ def _hotfix_show_settings_window(self, initial_tab=None):
 
         telegram_chat_id = QLineEdit()
         telegram_chat_id.setPlaceholderText("Telegram chat ID")
+        telegram_help = QLabel(
+            "Create a bot with @BotFather, send it a message once, then paste the bot token and target chat ID here."
+        )
+        telegram_help.setWordWrap(True)
+        telegram_help.setStyleSheet("color: #9fb0c7; padding-top: 4px;")
 
         trade_close_notifications_enabled = QComboBox()
         trade_close_notifications_enabled.addItem("Disabled", False)
@@ -17160,10 +17299,16 @@ def _hotfix_show_settings_window(self, initial_tab=None):
 
         news_feed_url = QLineEdit()
         news_feed_url.setPlaceholderText(NewsService.DEFAULT_FEED_URL)
+        news_help = QLabel(
+            "News sentiment uses the configured RSS template. The default feed is a free Google News search feed."
+        )
+        news_help.setWordWrap(True)
+        news_help.setStyleSheet("color: #9fb0c7; padding-top: 4px;")
 
         integrations_form.addRow("Telegram notifications", telegram_enabled)
         integrations_form.addRow("Telegram bot token", telegram_bot_token)
         integrations_form.addRow("Telegram chat ID", telegram_chat_id)
+        integrations_form.addRow("", telegram_help)
         integrations_form.addRow(QLabel("<b>Trade close notifications</b>"))
         integrations_form.addRow("Trade close alerts", trade_close_notifications_enabled)
         integrations_form.addRow("", trade_close_notify_telegram)
@@ -17188,6 +17333,7 @@ def _hotfix_show_settings_window(self, initial_tab=None):
         integrations_form.addRow("Trade from news bias", news_autotrade)
         integrations_form.addRow("Draw news on chart", news_chart)
         integrations_form.addRow("News feed URL", news_feed_url)
+        integrations_form.addRow("", news_help)
         tabs.addTab(_hotfix_wrap_tab_in_scroll_area(integrations_tab, minimum_width=600), "Integrations")
 
         summary = QLabel("-")

@@ -26,6 +26,7 @@ from config.config import AppConfig, BrokerConfig, RiskConfig, SystemConfig
 from config.credential_manager import CredentialManager
 from broker.market_venues import MARKET_VENUE_CHOICES, supported_market_venues_for_profile
 from frontend.ui.i18n import apply_runtime_translations, iter_supported_languages
+from frontend.ui.loading_overlay import LoadingOverlay
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -312,6 +313,7 @@ class Dashboard(QWidget):
         self._build_ui()
         self._connect_signals()
         self.apply_platform_sync_profile(self._platform_sync_profile())
+        self.loading_overlay = LoadingOverlay(self, title="Preparing trading session...")
         if hasattr(self.controller, "language_changed"):
             self.controller.language_changed.connect(lambda _code: self.apply_language())
 
@@ -2942,11 +2944,18 @@ class Dashboard(QWidget):
         self.spinner.setVisible(True)
         if self.spinner_movie is not None:
             self.spinner_movie.start()
+        if hasattr(self, "loading_overlay"):
+            self.loading_overlay.set_loading(
+                "Preparing your trading session...",
+                "Authenticating the broker, loading account context, and opening the terminal.",
+            )
 
     def hide_loading(self):
         """Hide loading status and restore the connect button state."""
         self.spinner.setVisible(False)
         if self.spinner_movie is not None:
             self.spinner_movie.stop()
+        if hasattr(self, "loading_overlay"):
+            self.loading_overlay.clear_loading()
         self.connect_button.setEnabled(True)
         self._update_session_preview()

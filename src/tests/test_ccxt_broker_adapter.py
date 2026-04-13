@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from broker.broker_errors import BrokerOperationError
 from broker.ccxt_broker import CCXTBroker
 
 
@@ -151,6 +152,16 @@ class RangeHistoryExchange(FakeExchange):
         return rows
 
 
+class InsufficientFundsExchange(FakeExchange):
+    async def create_order(self, symbol, order_type, side, amount, price, params):
+        raise RuntimeError("400 Bad Request: INSUFFICIENT_FUNDS")
+
+
+class RateLimitedExchange(FakeExchange):
+    async def fetch_balance(self):
+        raise RuntimeError("429 Too Many Requests")
+
+
 @pytest.fixture
 def broker_module(monkeypatch):
     import broker.ccxt_broker as broker_mod
@@ -170,6 +181,8 @@ def broker_module(monkeypatch):
     monkeypatch.setattr(broker_mod.ccxt, "binanceus", FakeExchange, raising=False)
     monkeypatch.setattr(broker_mod.ccxt, "unsupportedexchange", UnsupportedPrivateExchange, raising=False)
     monkeypatch.setattr(broker_mod.ccxt, "rangehistoryexchange", RangeHistoryExchange, raising=False)
+    monkeypatch.setattr(broker_mod.ccxt, "insufficientfundsexchange", InsufficientFundsExchange, raising=False)
+    monkeypatch.setattr(broker_mod.ccxt, "ratelimitedexchange", RateLimitedExchange, raising=False)
     return broker_mod
 
 
@@ -458,5 +471,37 @@ def test_ccxt_broker_rejects_binance_credentials_with_whitespace(broker_module):
             await broker.connect()
 
         assert "contains whitespace" in str(exc.value)
+
+    asyncio.run(scenario())
+
+
+def test_ccxt_broker_translates_order_rejections_into_structured_errors(broker_module):
+    async def scenario():
+        broker = CCXTBroker(make_config(exchange="insufficientfundsexchange"))
+
+        with pytest.raises(BrokerOperationError) as exc:
+            await broker.create_order("BTC/USDT", "buy", 1.0, type="market")
+
+        assert exc.value.category == "insufficient_funds"
+        assert exc.value.rejection is True
+        assert "funds are insufficient" in str(exc.value).lower()
+
+        await broker.close()
+
+    asyncio.run(scenario())
+
+
+def test_ccxt_broker_translates_rate_limits_into_retryable_errors(broker_module):
+    async def scenario():
+        broker = CCXTBroker(make_config(exchange="ratelimitedexchange"))
+
+        with pytest.raises(BrokerOperationError) as exc:
+            await broker.fetch_balance()
+
+        assert exc.value.category == "rate_limit"
+        assert exc.value.retryable is True
+        assert exc.value.cooldown_seconds == 300.0
+
+        await broker.close()
 
     asyncio.run(scenario())

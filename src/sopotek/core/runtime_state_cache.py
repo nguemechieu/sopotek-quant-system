@@ -104,7 +104,7 @@ class RuntimeStateCache:
             self.order_books[symbol] = self._normalize_payload(getattr(event, "data", None), model=OrderBookSnapshot)
             return
 
-        if event_type in {"SIGNAL", "SIGNAL_EVENT", "DECISION_EVENT"} and symbol:
+        if event_type in {"SIGNAL", "SIGNAL_EVENT", "SIGNAL_CREATED", "SIGNAL_VALIDATED", "DECISION_EVENT", "DECISION_MADE"} and symbol:
             self.signals[symbol] = copy.deepcopy(payload)
             return
 

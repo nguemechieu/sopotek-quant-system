@@ -459,6 +459,29 @@ def test_initialize_trading_keeps_dashboard_visible(monkeypatch):
     assert "startup_health_check" in calls["created_tasks"]
 
 
+def test_restore_terminal_runtime_data_prefers_initial_runtime_loader():
+    calls = []
+
+    async def _load_initial_runtime_data():
+        calls.append("initial")
+
+    async def _load_persisted_runtime_data():
+        calls.append("persisted")
+
+    controller = AppController.__new__(AppController)
+    controller._terminal_runtime_restore_task = None
+
+    terminal = SimpleNamespace(
+        _ui_shutting_down=False,
+        load_initial_runtime_data=_load_initial_runtime_data,
+        load_persisted_runtime_data=_load_persisted_runtime_data,
+    )
+
+    asyncio.run(AppController._restore_terminal_runtime_data(controller, terminal))
+
+    assert calls == ["initial"]
+
+
 def test_resolve_initial_storage_preferences_prefers_remote_env_when_unset(monkeypatch):
     class _FakeSettings:
         def contains(self, _key):

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 
 def utcnow() -> datetime:
@@ -30,6 +31,22 @@ class OrderBookSnapshot:
     timestamp: datetime = field(default_factory=utcnow)
 
 
+class SignalStatus:
+    CREATED = "CREATED"
+    FILTERED = "FILTERED"
+    APPROVED = "APPROVED"
+    EXECUTED = "EXECUTED"
+    CLOSED = "CLOSED"
+
+
+@dataclass(slots=True)
+class SignalConfidencePoint:
+    stage: str
+    confidence: float
+    timestamp: datetime = field(default_factory=utcnow)
+    note: str = ""
+
+
 @dataclass(slots=True)
 class Signal:
     symbol: str
@@ -43,6 +60,68 @@ class Signal:
     take_profit: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=utcnow)
+    id: str = field(default_factory=lambda: str(uuid4()))
+    source_strategy: str = ""
+    confidence_history: list[SignalConfidencePoint] = field(default_factory=list)
+    status: str = SignalStatus.CREATED
+
+    def __post_init__(self) -> None:
+        self.symbol = str(self.symbol or "").strip()
+        self.side = str(self.side or "").strip().lower()
+        self.strategy_name = str(self.strategy_name or "unknown").strip() or "unknown"
+        self.source_strategy = str(self.source_strategy or self.strategy_name).strip() or self.strategy_name
+        self.status = str(self.status or SignalStatus.CREATED).strip().upper() or SignalStatus.CREATED
+        self.confidence = float(self.confidence or 0.0)
+        normalized_history: list[SignalConfidencePoint] = []
+        for point in list(self.confidence_history or []):
+            if isinstance(point, SignalConfidencePoint):
+                normalized_history.append(point)
+                continue
+            try:
+                normalized_history.append(SignalConfidencePoint(**dict(point or {})))
+            except Exception:
+                continue
+        if not normalized_history:
+            normalized_history.append(
+                SignalConfidencePoint(
+                    stage="created",
+                    confidence=self.confidence,
+                    timestamp=self.timestamp,
+                    note=f"Signal created by {self.source_strategy}",
+                )
+            )
+        self.confidence_history = normalized_history
+
+    def clone(self, **changes: Any) -> "Signal":
+        return replace(self, **changes)
+
+    def transition(
+        self,
+        *,
+        stage: str,
+        status: str | None = None,
+        confidence: float | None = None,
+        note: str = "",
+        metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
+    ) -> "Signal":
+        next_confidence = float(self.confidence if confidence is None else confidence)
+        next_metadata = {**dict(self.metadata or {}), **dict(metadata or {})}
+        next_history = list(self.confidence_history or [])
+        next_history.append(
+            SignalConfidencePoint(
+                stage=str(stage or "").strip().lower() or "updated",
+                confidence=next_confidence,
+                timestamp=timestamp or utcnow(),
+                note=str(note or "").strip(),
+            )
+        )
+        return self.clone(
+            confidence=next_confidence,
+            status=str(status or self.status or SignalStatus.CREATED).strip().upper(),
+            metadata=next_metadata,
+            confidence_history=next_history,
+        )
 
 
 @dataclass(slots=True)

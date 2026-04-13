@@ -108,8 +108,9 @@ class SopotekRuntime:
         self.portfolio_engine = PortfolioEngine(self.bus, starting_cash=starting_equity)
         self.risk_engine = RiskEngine(
             self.bus,
+            portfolio_engine=self.portfolio_engine,
             starting_equity=starting_equity,
-            listen_event_type=EventType.ORDER_EVENT if enable_trader_agent else EventType.SIGNAL,
+            listen_event_type=EventType.DECISION_MADE if enable_trader_agent else EventType.SIGNAL,
         )
         self.performance_engine = PerformanceEngine(self.bus)
         self.feedback_engine = TradeFeedbackEngine(self.bus, default_timeframe=self.candle_timeframes[0])
@@ -118,7 +119,7 @@ class SopotekRuntime:
             self.ml_pipeline,
             threshold=ml_probability_threshold,
             allow_passthrough=True,
-        ) if enable_ml_filter else None
+        ) if (enable_ml_filter and not enable_trader_agent) else None
         self.market_hours_engine = MarketHoursEngine(
             default_asset_type=self.default_asset_type,
             logger=self.logger,

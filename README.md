@@ -4,7 +4,47 @@
   <img alt="Sopotek Trading AI logo" src="src/assets/logo.png" width="170" height="170">
 </p>
 
-Sopotek Trading AI is a desktop trading workstation built by Sopotek Corporation. It combines broker connectivity, live charting, manual and AI-assisted execution, order and position tracking, backtesting, operational safety tooling, Telegram integration, and OpenAI-assisted workflows in one PySide6 application.
+<p align="center">
+  <a href="https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/python-package-conda.yml">
+    <img alt="CI" src="https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/python-package-conda.yml/badge.svg?branch=master">
+  </a>
+  <a href="https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/ci.yml">
+    <img alt="Code Quality" src="https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/ci.yml/badge.svg?branch=master">
+  </a>
+  <a href="https://pypi.org/project/sopotek-trading-ai/">
+    <img alt="Python versions" src="https://img.shields.io/pypi/pyversions/sopotek-trading-ai">
+  </a>
+  <a href="https://pypi.org/project/sopotek-trading-ai/">
+    <img alt="PyPI version" src="https://img.shields.io/pypi/v/sopotek-trading-ai">
+  </a>
+  <a href="https://pypi.org/project/sopotek-trading-ai/">
+    <img alt="PyPI format" src="https://img.shields.io/pypi/format/sopotek-trading-ai">
+  </a>
+  <a href="https://github.com/nguemechieu/sopotek-trading-ai/issues">
+    <img alt="Support" src="https://img.shields.io/badge/support-GitHub%20Issues-1f6feb">
+  </a>
+</p>
+
+Sopotek Trading AI is a next-generation trading workstation engineered by Sopotek Corporation to bridge the gap between retail platforms and institutional trading systems.
+
+The platform combines real-time market connectivity, AI-driven decision support, execution infrastructure, and risk-aware automation into a single desktop environment.
+
+With integrated backtesting, multi-asset support, broker-aware order routing, and intelligent workflow automation, Sopotek helps traders scale from discretionary execution to disciplined, AI-assisted operations.
+
+| Branch | Version | Status |
+| --- | --- | --- |
+| `master` | `1.0.0` | [CI](https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/python-package-conda.yml) |
+| `dev` | rolling | [Code Quality](https://github.com/nguemechieu/sopotek-trading-ai/actions/workflows/ci.yml) |
+
+| Platform | Python | Delivery |
+| --- | --- | --- |
+| Windows (x86_64) | `3.10+` | Native PySide6 desktop application |
+| Linux (x86_64) | `3.10+` | Docker, browser, and headless runtime profiles |
+| macOS | `3.10+` | Source-based install and development workflow |
+
+Docs: [Project documentation](docs/)  
+Website: [GitHub repository](https://github.com/nguemechieu/sopotek-trading-ai)  
+Support: [GitHub issues](https://github.com/nguemechieu/sopotek-trading-ai/issues)
 
 ## Version And Status
 
@@ -291,10 +331,14 @@ docker compose --profile browser up -d app-http
 Then open the browser UI:
 
 ```text
-http://localhost:6080/vnc.html?autoconnect=1&resize=off
+http://localhost:6080/
 ```
 
+The launcher page embeds noVNC, keeps the desktop at `1600x900`, and adds a fullscreen launch button for the browser session. You can still open the raw client directly at `http://localhost:6080/vnc.html?autoconnect=1&reconnect=1&resize=off&show_dot=1` if you prefer.
+
 The browser profile defaults `NOVNC_RESIZE_MODE` to `off` so your browser scrollbars can reach the full virtual desktop. Set `NOVNC_RESIZE_MODE=scale` before launch if you prefer the UI to shrink to fit the browser window instead.
+
+To enable TLS for the browser desktop, set `NOVNC_TLS_ENABLED=1` before launching the browser profile. The startup script will generate a self-signed certificate automatically when no cert/key pair exists yet and will serve the UI over `https://localhost:6080/`.
 
 Compose defaults the app to the local `postgres` service using a SQLAlchemy URL such as `postgresql+psycopg://sopotek:sopotek_local@postgres:5432/sopotek_trading`. Override `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, or `POSTGRES_PORT` in your shell or `.env` before launch to change the local container defaults or the host port mapping. If you want Sopotek to connect to an external PostgreSQL instance instead, set `SOPOTEK_DATABASE_URL` directly, for example `postgresql+psycopg://user:secret@db-host:5432/sopotek_trading`.
 

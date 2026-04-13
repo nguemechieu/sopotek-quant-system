@@ -14,6 +14,7 @@ import ccxt.async_support as ccxt
 from broker.base_broker import BaseBroker
 from broker.coinbase_credentials import normalize_coinbase_credentials
 from broker.coinbase_jwt_auth import build_coinbase_rest_jwt, resolve_coinbase_rest_host, uses_coinbase_jwt_auth
+from broker.broker_errors import BrokerOperationError
 from broker.market_venues import (
     SPOT_ONLY_EXCHANGES,
     normalize_market_venue,
@@ -2064,6 +2065,104 @@ class CCXTBroker(BaseBroker):
                 return price
         return price
 
+    @staticmethod
+    def _matches_ccxt_error(exc, *names):
+        for name in names:
+            error_type = getattr(ccxt, name, None)
+            if isinstance(error_type, type) and isinstance(exc, error_type):
+                return True
+        return False
+
+    def _translate_exchange_exception(self, exc, method_name):
+        if isinstance(exc, BrokerOperationError):
+            return exc
+
+        action = str(method_name or "request").replace("_", " ")
+        exchange_name = str(self.exchange_name or "exchange").upper()
+        raw_message = str(exc).strip() or exc.__class__.__name__
+        lowered = raw_message.lower()
+
+        if self._matches_ccxt_error(exc, "RateLimitExceeded", "DDoSProtection") or any(
+            token in lowered for token in ("too many requests", "429", "rate limit")
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} rate limit hit while {action}: {raw_message}",
+                category="rate_limit",
+                retryable=True,
+                cooldown_seconds=300,
+                raw_message=raw_message,
+            )
+
+        if self._matches_ccxt_error(exc, "ExchangeNotAvailable", "OnMaintenance", "RequestTimeout", "NetworkError") or any(
+            token in lowered
+            for token in ("network", "timed out", "timeout", "service unavailable", "temporarily unavailable", "maintenance")
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} is temporarily unavailable while {action}: {raw_message}",
+                category="network_error",
+                retryable=True,
+                cooldown_seconds=120,
+                raw_message=raw_message,
+            )
+
+        if self._matches_ccxt_error(exc, "InsufficientFunds") or any(
+            token in lowered
+            for token in (
+                "insufficient funds",
+                "insufficient_funds",
+                "insufficient balance",
+                "insufficient margin",
+                "insufficient_margin",
+            )
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} rejected the order because funds are insufficient: {raw_message}",
+                category="insufficient_funds",
+                rejection=True,
+                cooldown_seconds=120,
+                raw_message=raw_message,
+            )
+
+        if self._matches_ccxt_error(exc, "InvalidOrder") or any(
+            token in lowered
+            for token in ("invalid order", "order rejected", "rejected", "min_notional", "minimum notional", "market is closed")
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} rejected the order request: {raw_message}",
+                category="invalid_order",
+                rejection=True,
+                cooldown_seconds=180,
+                raw_message=raw_message,
+            )
+
+        if self._matches_ccxt_error(exc, "BadSymbol") or any(
+            token in lowered for token in ("unknown symbol", "bad symbol", "symbol not found")
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} does not support the requested symbol: {raw_message}",
+                category="unsupported_symbol",
+                rejection=True,
+                cooldown_seconds=300,
+                raw_message=raw_message,
+            )
+
+        if self._matches_ccxt_error(exc, "AuthenticationError", "PermissionDenied") or any(
+            token in lowered for token in ("invalid api", "authentication", "permission denied", "unauthorized", "forbidden")
+        ):
+            return BrokerOperationError(
+                f"{exchange_name} authentication failed while {action}: {raw_message}",
+                category="authentication_error",
+                rejection=True,
+                cooldown_seconds=600,
+                raw_message=raw_message,
+            )
+
+        return BrokerOperationError(
+            f"{exchange_name} failed while {action}: {raw_message}",
+            category="broker_error",
+            raw_message=raw_message,
+        )
+
     async def _call_unified(self, method_name, *args, default=None, **kwargs):
         await self._ensure_connected()
 
@@ -2082,7 +2181,10 @@ class CCXTBroker(BaseBroker):
                 f"{self.exchange_name} does not support {method_name}"
             )
 
-        return await method(*args, **kwargs)
+        try:
+            return await method(*args, **kwargs)
+        except Exception as exc:
+            raise self._translate_exchange_exception(exc, method_name) from exc
 
     # ==========================================================
     # CONNECT
@@ -2432,14 +2534,17 @@ class CCXTBroker(BaseBroker):
         if not self._exchange_has("create_order"):
             raise NotImplementedError(f"{self.exchange_name} does not support create_order")
 
-        created = await self.exchange.create_order(
-            symbol,
-            normalized_type,
-            str(side).lower(),
-            normalized_amount,
-            normalized_price,
-            order_params,
-        )
+        try:
+            created = await self.exchange.create_order(
+                symbol,
+                normalized_type,
+                str(side).lower(),
+                normalized_amount,
+                normalized_price,
+                order_params,
+            )
+        except Exception as exc:
+            raise self._translate_exchange_exception(exc, "create_order") from exc
         self._invalidate_account_state_cache()
         if isinstance(created, dict) and trigger_price is not None:
             created.setdefault("stop_price", float(trigger_price))

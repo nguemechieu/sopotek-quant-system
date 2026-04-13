@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from broker.broker_errors import BrokerOperationError
 from event_bus.event_bus import EventBus
 from event_bus.event_types import EventType
 from execution.execution_manager import ExecutionManager
@@ -87,6 +88,48 @@ class RejectedOrderBroker(MockBroker):
         take_profit=None,
     ):
         raise RuntimeError("400 Bad Request: Order rejected | INSUFFICIENT_MARGIN")
+
+
+class StructuredRateLimitedBroker(MockBroker):
+    async def create_order(
+        self,
+        symbol,
+        side,
+        amount,
+        type="market",
+        price=None,
+        stop_price=None,
+        params=None,
+        stop_loss=None,
+        take_profit=None,
+    ):
+        raise BrokerOperationError(
+            "BINANCEUS rate limit hit while create order: 429 Too Many Requests",
+            category="rate_limit",
+            retryable=True,
+            cooldown_seconds=300,
+        )
+
+
+class StructuredRejectedBroker(MockBroker):
+    async def create_order(
+        self,
+        symbol,
+        side,
+        amount,
+        type="market",
+        price=None,
+        stop_price=None,
+        params=None,
+        stop_loss=None,
+        take_profit=None,
+    ):
+        raise BrokerOperationError(
+            "BINANCEUS rejected the order request: minimum notional not met",
+            category="invalid_order",
+            rejection=True,
+            cooldown_seconds=180,
+        )
 
 
 class TrackingBroker(MockBroker):
@@ -297,6 +340,37 @@ def test_execute_returns_rejected_order_for_insufficient_margin():
     assert order["source"] == "bot"
     assert notifications[-1]["status"] == "rejected"
     assert notifications[-1]["source"] == "bot"
+    assert manager._cooldown_remaining("BTC/USDT") > 0
+    assert bus.queue.empty()
+
+
+def test_execute_uses_structured_broker_rate_limit_metadata():
+    broker = StructuredRateLimitedBroker(balance={"free": {"USDT": 1000}})
+    bus = EventBus()
+    manager = ExecutionManager(broker, bus, OrderRouter(broker))
+
+    order = asyncio.run(
+        manager.execute(symbol="BTC/USDT", side="buy", amount=0.01, price=100)
+    )
+
+    assert order is None
+    assert manager._cooldown_remaining("BTC/USDT") > 0
+    assert "rate limit hit" in (manager.last_skip_reason("BTC/USDT") or "").lower()
+
+
+def test_execute_uses_structured_broker_rejection_metadata():
+    broker = StructuredRejectedBroker(balance={"free": {"USDT": 1000}})
+    bus = EventBus()
+    notifications = []
+    manager = ExecutionManager(broker, bus, OrderRouter(broker), trade_notifier=notifications.append)
+
+    order = asyncio.run(
+        manager.execute(symbol="BTC/USDT", side="buy", amount=0.01, price=100)
+    )
+
+    assert order["status"] == "rejected"
+    assert order["error_category"] == "invalid_order"
+    assert notifications[-1]["error_category"] == "invalid_order"
     assert manager._cooldown_remaining("BTC/USDT") > 0
     assert bus.queue.empty()
 

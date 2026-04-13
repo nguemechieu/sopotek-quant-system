@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 
 POSITION_HEADERS = ["Symbol", "Side", "Amount", "Entry", "Mark", "Value", "PnL", "Action"]
+ASSET_HEADERS = ["Asset", "Free", "Used", "Total"]
 OPEN_ORDER_HEADERS = [
     "Symbol",
     "Side",
@@ -24,6 +25,17 @@ OPEN_ORDER_HEADERS = [
     "Remaining",
     "Status",
     "PnL",
+    "Order ID",
+]
+ORDER_HISTORY_HEADERS = [
+    "Timestamp",
+    "Symbol",
+    "Side",
+    "Type",
+    "Price",
+    "Filled",
+    "Remaining",
+    "Status",
     "Order ID",
 ]
 TRADE_LOG_HEADERS = [
@@ -38,6 +50,36 @@ TRADE_LOG_HEADERS = [
     "Order ID",
     "PnL",
 ]
+TRADE_HISTORY_HEADERS = list(TRADE_LOG_HEADERS)
+
+
+def _build_assets_tab(terminal):
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(8)
+
+    filter_row = QHBoxLayout()
+    filter_row.setContentsMargins(0, 0, 0, 0)
+    filter_row.setSpacing(8)
+    filter_label = QLabel("Filter")
+    filter_input = QLineEdit()
+    filter_input.setPlaceholderText("Search assets by symbol or balance values")
+    filter_summary = QLabel("Showing all assets")
+    filter_summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    filter_row.addWidget(filter_label)
+    filter_row.addWidget(filter_input, 1)
+    filter_row.addWidget(filter_summary)
+    layout.addLayout(filter_row)
+
+    terminal.assets_table = QTableWidget()
+    terminal.assets_table.setColumnCount(len(ASSET_HEADERS))
+    terminal.assets_table.setHorizontalHeaderLabels(ASSET_HEADERS)
+    layout.addWidget(terminal.assets_table)
+    terminal.assets_filter_input = filter_input
+    terminal.assets_filter_summary = filter_summary
+    filter_input.textChanged.connect(lambda *_: terminal._apply_assets_filter())
+    return container
 
 
 def _build_positions_tab(terminal):
@@ -108,6 +150,64 @@ def _build_open_orders_tab(terminal):
     return container
 
 
+def _build_order_history_tab(terminal):
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(8)
+
+    filter_row = QHBoxLayout()
+    filter_row.setContentsMargins(0, 0, 0, 0)
+    filter_row.setSpacing(8)
+    filter_label = QLabel("Filter")
+    filter_input = QLineEdit()
+    filter_input.setPlaceholderText("Search historical orders by symbol, status, side, type, or order id")
+    filter_summary = QLabel("Showing all historical orders")
+    filter_summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    filter_row.addWidget(filter_label)
+    filter_row.addWidget(filter_input, 1)
+    filter_row.addWidget(filter_summary)
+    layout.addLayout(filter_row)
+
+    terminal.order_history_table = QTableWidget()
+    terminal.order_history_table.setColumnCount(len(ORDER_HISTORY_HEADERS))
+    terminal.order_history_table.setHorizontalHeaderLabels(ORDER_HISTORY_HEADERS)
+    layout.addWidget(terminal.order_history_table)
+    terminal.order_history_filter_input = filter_input
+    terminal.order_history_filter_summary = filter_summary
+    filter_input.textChanged.connect(lambda *_: terminal._apply_order_history_filter())
+    return container
+
+
+def _build_trade_history_tab(terminal):
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(8)
+
+    filter_row = QHBoxLayout()
+    filter_row.setContentsMargins(0, 0, 0, 0)
+    filter_row.setSpacing(8)
+    filter_label = QLabel("Filter")
+    filter_input = QLineEdit()
+    filter_input.setPlaceholderText("Search trade history by symbol, source, side, status, or order id")
+    filter_summary = QLabel("Showing all trade history rows")
+    filter_summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    filter_row.addWidget(filter_label)
+    filter_row.addWidget(filter_input, 1)
+    filter_row.addWidget(filter_summary)
+    layout.addLayout(filter_row)
+
+    terminal.trade_history_table = QTableWidget()
+    terminal.trade_history_table.setColumnCount(len(TRADE_HISTORY_HEADERS))
+    terminal.trade_history_table.setHorizontalHeaderLabels(TRADE_HISTORY_HEADERS)
+    layout.addWidget(terminal.trade_history_table)
+    terminal.trade_history_filter_input = filter_input
+    terminal.trade_history_filter_summary = filter_summary
+    filter_input.textChanged.connect(lambda *_: terminal._apply_trade_history_filter())
+    return container
+
+
 def create_positions_panel(terminal):
     dock = QDockWidget("Positions & Orders", terminal)
     dock.setObjectName("positions_dock")
@@ -118,8 +218,11 @@ def create_positions_panel(terminal):
     tabs.setObjectName("positions_orders_tabs")
     tabs.setDocumentMode(True)
     tabs.setUsesScrollButtons(True)
+    tabs.addTab(_build_assets_tab(terminal), "Assets")
     tabs.addTab(_build_positions_tab(terminal), "Positions")
     tabs.addTab(_build_open_orders_tab(terminal), "Open Orders")
+    tabs.addTab(_build_order_history_tab(terminal), "Order History")
+    tabs.addTab(_build_trade_history_tab(terminal), "Trade History")
 
     terminal.positions_orders_tabs = tabs
     dock.setWidget(tabs)

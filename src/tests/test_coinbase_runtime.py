@@ -10,6 +10,7 @@ import jwt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from broker.ccxt_broker import CCXTBroker
+from broker.broker_errors import BrokerOperationError
 from event_bus.event_bus import EventBus
 from market_data.websocket.coinbase_web_socket import CoinbaseWebSocket
 
@@ -671,8 +672,9 @@ def test_coinbase_ccxt_broker_preserves_exchange_id_during_error_handling(monkey
                 type="limit",
                 price=65000.0,
             )
-        except RuntimeError as exc:
-            assert str(exc) == 'coinbase {"error":"bad request"}'
+        except BrokerOperationError as exc:
+            assert exc.raw_message == 'coinbase {"error":"bad request"}'
+            assert str(exc) == 'COINBASE failed while create order: coinbase {"error":"bad request"}'
         else:
             raise AssertionError("Expected create_order to surface the exchange error")
 

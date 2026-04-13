@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from agents.decision_engine import DecisionEngine
+from agents.signal_engine import SignalEngine
+from agents.trader_pipeline import evaluate_trader_symbol
+from agents.validation_engine import ValidationEngine, ValidationResult
 from sopotek.agents.base import BaseAgent
 from sopotek.core.event_bus import AsyncEventBus
 from sopotek.core.event_types import EventType
@@ -15,10 +19,12 @@ from sopotek.core.models import (
     ClosePositionRequest,
     ExecutionReport,
     FeatureVector,
+    ModelDecision,
     PortfolioSnapshot,
     PositionUpdate,
     ReasoningDecision,
     Signal,
+    SignalStatus,
     TradeFeedback,
     TraderDecision,
 )
@@ -195,9 +201,13 @@ class TraderAgent(BaseAgent):
         self._evaluation_suspended = False
         self._last_management_check: dict[str, datetime] = {}
         self._management_lock_until: dict[str, datetime] = {}
+        self.signal_engine = SignalEngine(signal_ttl_seconds=self.signal_ttl)
+        self.validation_engine = ValidationEngine()
+        self.decision_engine = DecisionEngine()
 
     def attach(self, event_bus: AsyncEventBus) -> None:
         self.bus = event_bus
+        self.signal_engine.attach(event_bus)
         event_bus.subscribe(EventType.MARKET_DATA_EVENT, self._on_market_data)
         event_bus.subscribe(EventType.SIGNAL_EVENT, self._on_signal_event)
         event_bus.subscribe(EventType.FEATURE_VECTOR, self._on_feature_vector)
@@ -423,8 +433,7 @@ class TraderAgent(BaseAgent):
         signal = getattr(event, "data", None)
         if signal is None or self.bus is None:
             return
-        if not isinstance(signal, Signal):
-            signal = Signal(**dict(signal))
+        signal = await self.signal_engine.ingest(signal, source=self.name)
         symbol = str(signal.symbol or "").strip()
         if not symbol:
             return
@@ -678,7 +687,47 @@ class TraderAgent(BaseAgent):
         if not symbol or self.bus is None:
             return
         self._pending_evaluations.discard(symbol)
-        decision, order_signal = self.evaluate_symbol(symbol, profile_id=profile_id)
+        now = _utc_now()
+        collection = self.signal_engine.collect(symbol, self.strategy_signals, now=now)
+        strategy_bucket = self.strategy_signals.get(symbol, {})
+        for strategy_name in collection.stale_strategies:
+            strategy_bucket.pop(strategy_name, None)
+        profile = self.get_profile(profile_id)
+        features = self._resolve_feature_context(symbol, signals=collection.signals)
+        validation = self.validation_engine.validate(
+            symbol=symbol,
+            signals=collection.signals,
+            feature_context=features,
+            minimum_confidence=self._min_confidence(profile),
+            model_probability=self._model_probability(symbol, features),
+            reasoning_lookup=lambda target_symbol, strategy_name: self.latest_reasoning.get((target_symbol, strategy_name)),
+            reasoning_contributor=lambda target_symbol, strategy_name, side, seed: self._openai_reasoning_contribution(
+                symbol=target_symbol,
+                selected_strategy=strategy_name,
+                winning_side=side,
+                reasoning_seed=seed,
+            ),
+            reasoning_metadata=self._reasoning_contribution_metadata,
+        )
+        await self._publish_validation_model_score(
+            symbol=symbol,
+            signals=collection.signals,
+            feature_context=features,
+            validation=validation,
+        )
+        for filtered_signal in validation.filtered_signals:
+            strategy_bucket.pop(filtered_signal.strategy_name, None)
+            await self.bus.publish(EventType.SIGNAL_VALIDATED, filtered_signal, priority=60, source=self.name)
+        for validated_signal in validation.validated_signals:
+            self.strategy_signals[symbol][validated_signal.strategy_name] = validated_signal
+            await self.bus.publish(EventType.SIGNAL_VALIDATED, validated_signal, priority=60, source=self.name)
+        decision, order_signal = self.evaluate_symbol(
+            symbol,
+            profile_id=profile_id,
+            prepared_signals=validation.validated_signals,
+            prepared_features=features,
+            validation_result=validation,
+        )
         self.recent_decisions[decision.profile_id].append(decision)
         await self.bus.publish(EventType.DECISION_EVENT, decision, priority=62, source=self.name)
         management_plan = dict((decision.metadata or {}).get("position_management") or {})
@@ -704,10 +753,37 @@ class TraderAgent(BaseAgent):
             )
             await self.bus.publish(EventType.CLOSE_POSITION, close_request, priority=63, source=self.name)
         if order_signal is not None and decision.action in {"BUY", "SELL"}:
+            candidate = order_signal.transition(
+                stage="decision_made",
+                status=SignalStatus.CREATED,
+                note=f"Decision engine selected {decision.selected_strategy}",
+                metadata={
+                    "decision_action": decision.action,
+                    "decision_reasoning": decision.reasoning,
+                },
+            )
             order_priority = 81 if str(management_plan.get("action") or "").strip().lower() == "reverse" else 64
-            await self.bus.publish(EventType.ORDER_EVENT, order_signal, priority=order_priority, source=self.name)
+            await self.bus.publish(EventType.DECISION_MADE, candidate, priority=63, source=self.name)
+            await self.bus.publish(EventType.ORDER_EVENT, candidate, priority=order_priority, source=self.name)
 
-    def evaluate_symbol(self, symbol: str, *, profile_id: str | None = None) -> tuple[TraderDecision, Signal | None]:
+    def evaluate_symbol(
+        self,
+        symbol: str,
+        *,
+        profile_id: str | None = None,
+        prepared_signals: list[Signal] | None = None,
+        prepared_features: dict[str, float] | None = None,
+        validation_result: ValidationResult | None = None,
+    ) -> tuple[TraderDecision, Signal | None]:
+        return evaluate_trader_symbol(
+            self,
+            symbol,
+            profile_id=profile_id,
+            prepared_signals=prepared_signals,
+            prepared_features=prepared_features,
+            validation_result=validation_result,
+        )
+
         profile_key = str(profile_id or self.active_profile_id or "").strip() or self.active_profile_id
         profile = self.get_profile(profile_key)
         now = _utc_now()
@@ -1811,6 +1887,81 @@ class TraderAgent(BaseAgent):
             self.logger.exception("TraderAgent ML inference failed for %s", symbol)
             return None
         return max(0.0, min(1.0, probability))
+
+    async def _publish_validation_model_score(
+        self,
+        *,
+        symbol: str,
+        signals: list[Signal],
+        feature_context: dict[str, float],
+        validation: ValidationResult,
+    ) -> None:
+        if self.bus is None:
+            return
+        decision = self._build_validation_model_decision(
+            symbol=symbol,
+            signals=signals,
+            feature_context=feature_context,
+            validation=validation,
+        )
+        if decision is None:
+            return
+        await self.bus.publish(EventType.MODEL_SCORE, decision, priority=59, source=self.name)
+
+    def _build_validation_model_decision(
+        self,
+        *,
+        symbol: str,
+        signals: list[Signal],
+        feature_context: dict[str, float],
+        validation: ValidationResult,
+    ) -> ModelDecision | None:
+        if not signals and not feature_context:
+            return None
+        predictor = self.predictor
+        is_ready = bool(getattr(predictor, "is_fitted", getattr(predictor, "is_ready", False)))
+        model_name = str(
+            getattr(predictor, "model_name", getattr(type(predictor), "__name__", "validation_model")) if predictor is not None else "validation_model"
+        ).strip() or "validation_model"
+        probability = validation.model_probability
+        threshold = float(self.validation_engine.ml_reject_threshold)
+        feature_values = dict(feature_context or {})
+        approved = True
+
+        if predictor is None:
+            probability = 0.5
+            reason = "passthrough_no_model"
+        elif not is_ready:
+            probability = 0.5
+            reason = "passthrough_unfitted_model"
+        elif not feature_values:
+            probability = 0.5
+            reason = "passthrough_missing_features"
+        elif probability is None:
+            probability = 0.5
+            reason = "passthrough_missing_probability"
+        else:
+            probability = max(0.0, min(1.0, float(probability)))
+            approved = probability >= threshold
+            reason = "validation_model_probability"
+
+        seed_signal = signals[0] if signals else None
+        return ModelDecision(
+            symbol=symbol,
+            strategy_name=str(getattr(seed_signal, "strategy_name", "") or "validation_engine"),
+            model_name=model_name,
+            probability=float(probability),
+            threshold=threshold,
+            approved=bool(approved),
+            side=str(getattr(seed_signal, "side", "") or "").lower(),
+            features=feature_values,
+            metadata={
+                "reason": reason,
+                "mode": "pre_decision_validation",
+                "validated_signals": len(validation.validated_signals),
+                "filtered_signals": len(validation.filtered_signals),
+            },
+        )
 
     def _latest_price(self, symbol: str) -> float:
         payload = self.latest_market.get(symbol, {})

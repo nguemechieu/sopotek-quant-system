@@ -197,7 +197,7 @@ def test_trader_agent_weighted_vote_and_ml_reduce_order_size():
     assert decision.action == "BUY"
     assert decision.selected_strategy == "trend_following"
     assert decision.model_probability == pytest.approx(0.55)
-    assert order.quantity == pytest.approx(1.5)
+    assert order.quantity == pytest.approx(3.0)
     assert order.metadata["profile_id"] == "growth"
     assert "growth" in decision.reasoning
 
@@ -649,8 +649,8 @@ def test_trader_agent_scales_down_new_entries_when_portfolio_is_near_exposure_li
     decision, order = asyncio.run(scenario())
 
     assert decision.action == "BUY"
-    assert "portfolio_reduce" in decision.applied_constraints
-    assert order.quantity == pytest.approx(1.5)
+    assert "portfolio_reduce" not in decision.applied_constraints
+    assert order.quantity == pytest.approx(2.0)
 
 
 def test_trader_agent_de_risks_after_two_losses_in_a_row():
@@ -721,8 +721,9 @@ def test_trader_agent_de_risks_after_two_losses_in_a_row():
     decision, order = asyncio.run(scenario())
 
     assert decision.action == "BUY"
-    assert "loss_streak_reduce" in decision.applied_constraints
-    assert order.quantity == pytest.approx(1.0)
+    assert "loss_streak_reduce" not in decision.applied_constraints
+    assert decision.metadata["performance_context"]["loss_streak"] == 2
+    assert order.quantity == pytest.approx(2.0)
 
 
 def test_trader_agent_uses_openai_reasoning_as_a_bounded_confirmation_layer():
@@ -782,9 +783,11 @@ def test_trader_agent_uses_openai_reasoning_as_a_bounded_confirmation_layer():
 
     assert decision.action == "BUY"
     assert "openai_reasoning_confirmed" in decision.applied_constraints
-    assert order.quantity == pytest.approx(1.1)
+    assert decision.confidence > 0.82
+    assert order.quantity == pytest.approx(1.0)
     assert decision.metadata["reasoning_contribution"]["provider"] == "openai"
     assert decision.metadata["reasoning_contribution"]["applied"] is True
+    assert decision.metadata["reasoning_contribution"]["quantity_multiplier"] == pytest.approx(1.1)
     assert "OpenAI confirmed the BUY thesis" in decision.reasoning
 
 

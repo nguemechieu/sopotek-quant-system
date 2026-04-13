@@ -11,8 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from frontend.ui.panels.trading_updates import (
     normalize_open_order_entry,
     normalize_position_entry,
+    populate_assets_table,
     populate_open_orders_table,
+    populate_order_history_table,
     populate_positions_table,
+    populate_trade_history_table,
     update_trade_log,
 )
 
@@ -61,6 +64,90 @@ def test_normalize_open_order_entry_uses_mid_price_and_computes_pnl():
     assert result["mark"] == 105.0
     assert result["remaining"] == 1.5
     assert result["pnl"] == 7.5
+
+
+def test_populate_assets_table_builds_rows_from_balance_snapshot_and_filters():
+    _app()
+    table = QTableWidget()
+    summary = QLabel()
+    search = QLineEdit()
+    fake = SimpleNamespace(
+        assets_table=table,
+        assets_filter_input=search,
+        assets_filter_summary=summary,
+        _assets_table_signature=None,
+    )
+
+    balances = {
+        "free": {"USD": 800.0, "BTC": 0.25},
+        "used": {"USD": 200.0, "BTC": 0.0},
+        "total": {"USD": 1000.0, "BTC": 0.25},
+    }
+
+    populate_assets_table(fake, balances)
+    search.setText("btc")
+    populate_assets_table(fake, balances)
+
+    assert table.rowCount() == 2
+    assert table.isRowHidden(0) != table.isRowHidden(1)
+    assert summary.text() == "Showing 1 of 2 assets"
+
+
+def test_populate_order_history_table_filters_rows():
+    _app()
+    table = QTableWidget()
+    summary = QLabel()
+    search = QLineEdit()
+    fake = SimpleNamespace(
+        order_history_table=table,
+        order_history_filter_input=search,
+        order_history_filter_summary=summary,
+        _order_history_table_signature=None,
+    )
+
+    rows = [
+        {"timestamp": "2026-04-12T12:00:00Z", "symbol": "BTC/USDT", "side": "buy", "type": "limit", "price": 100.0, "filled": 1.0, "remaining": 0.0, "status": "filled", "id": "ord-1"},
+        {"timestamp": "2026-04-12T12:01:00Z", "symbol": "ETH/USDT", "side": "sell", "type": "market", "price": 200.0, "filled": 0.5, "remaining": 0.5, "status": "partial", "id": "ord-2"},
+    ]
+
+    populate_order_history_table(fake, rows)
+    search.setText("eth")
+    populate_order_history_table(fake, rows)
+
+    assert table.rowCount() == 2
+    hidden_rows = [table.isRowHidden(index) for index in range(table.rowCount())]
+    assert hidden_rows.count(True) == 1
+    assert hidden_rows.count(False) == 1
+    assert summary.text() == "Showing 1 of 2 historical orders"
+
+
+def test_populate_trade_history_table_reuses_trade_log_normalization_and_filters():
+    _app()
+    table = QTableWidget()
+    summary = QLabel()
+    search = QLineEdit()
+    fake = SimpleNamespace(
+        trade_history_table=table,
+        trade_history_filter_input=search,
+        trade_history_filter_summary=summary,
+        _trade_history_table_signature=None,
+        _normalize_trade_log_entry=lambda trade: trade,
+        _format_trade_log_value=lambda value: "" if value is None else str(value),
+    )
+
+    rows = [
+        {"timestamp": "2026-04-12T12:00:00Z", "symbol": "BTC/USDT", "source": "Bot", "side": "buy", "price": 100.0, "size": 1.0, "order_type": "limit", "status": "filled", "order_id": "ord-1", "pnl": 10.0},
+        {"timestamp": "2026-04-12T12:01:00Z", "symbol": "ETH/USDT", "source": "Manual", "side": "sell", "price": 200.0, "size": 2.0, "order_type": "market", "status": "closed", "order_id": "ord-2", "pnl": -5.0, "reason": "Fade"},
+    ]
+
+    populate_trade_history_table(fake, rows)
+    search.setText("manual")
+    populate_trade_history_table(fake, rows)
+
+    assert table.rowCount() == 2
+    assert table.isRowHidden(0) is True
+    assert table.isRowHidden(1) is False
+    assert summary.text() == "Showing 1 of 2 trade history rows"
 
 
 def test_update_trade_log_inserts_row_and_sets_tooltip():

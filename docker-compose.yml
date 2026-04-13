@@ -99,6 +99,10 @@ services:
       SCREEN_DEPTH: ${SCREEN_DEPTH:-24}
       NOVNC_PORT: 6080
       NOVNC_RESIZE_MODE: ${NOVNC_RESIZE_MODE:-off}
+      NOVNC_RECONNECT: ${NOVNC_RECONNECT:-1}
+      NOVNC_SHOW_DOT: ${NOVNC_SHOW_DOT:-1}
+      NOVNC_TLS_ENABLED: ${NOVNC_TLS_ENABLED:-0}
+      NOVNC_TLS_HOSTNAME: ${NOVNC_TLS_HOSTNAME:-localhost}
       VNC_PORT: 5900
     volumes:
       - ./credentials.json:/app/credentials.json
