@@ -52,8 +52,10 @@ jobs:
           python -m pytest --version
           python -m bandit --version
 
-      - name: Check formatting
-        run: bash tools/format.sh --check
+      - name: Format check
+        run: |
+         isort . --check --diff
+         black . --check
 
       - name: Run linting
         run: bash tools/lint.sh
@@ -66,6 +68,8 @@ jobs:
 
       - name: Run security scan
         run: bash tools/security_scan.sh
+
+        
 
       - name: Upload code quality reports
         if: always()
