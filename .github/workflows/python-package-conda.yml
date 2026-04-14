@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - dev
     tags:
       - "v*.*.*"
   pull_request:
@@ -28,7 +28,7 @@ jobs:
       - name: Set up Conda environment
         uses: conda-incubator/setup-miniconda@v3
         with:
-          activate-environment: sopotek-trading-ai
+          activate-environment: sopotek-quant-system
           auto-activate-base: false
           channels: conda-forge,defaults
           environment-file: environment.yml
@@ -114,7 +114,7 @@ jobs:
         with:
           context: .
           load: true
-          tags: sopotek-trading-ai:ci
+          tags: sopotek-quant-system:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -122,5 +122,5 @@ jobs:
         run: |
           docker run --rm \
             -e QT_QPA_PLATFORM=offscreen \
-            sopotek-trading-ai:ci \
+            sopotek-quant-system:ci \
             python -c "import main; print('main import ok', main.__file__)"
